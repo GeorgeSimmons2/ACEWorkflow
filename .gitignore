@@ -1,1 +1,21 @@
 *.csv
+
+# Python package has its own repo
+python/
+
+# VS Code settings
+.vscode/
+
+# Conda package manager
+.CondaPkg/
+
+# Large data/output directories
+models/
+results/
+logs/
+
+# Large data files
+*.xyz
+*.json
+*.ipynb
+

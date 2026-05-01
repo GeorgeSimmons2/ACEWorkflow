@@ -1,6 +1,0 @@
-WARNING: Method definition rrule(typeof(Base.merge), NamedTuple{F1, T} where T<:Tuple, NamedTuple{F2, T} where T<:Tuple) where {F1, F2} in module ChainRules at /home/astro/phupfb/.julia/packages/ChainRules/14CDN/src/rulesets/Base/base.jl:347 overwritten in module Lux at /home/astro/phupfb/.julia/packages/Lux/68T9j/src/chainrules.jl:17.
-ERROR: Method overwriting is not permitted during Module precompilation. Use `__precompile__(false)` to opt-out of precompilation.
-WARNING: Method definition rrule(typeof(Base.merge), T1, T2) where {T1<:(NamedTuple{names, T} where T<:Tuple where names), T2<:(NamedTuple{names, T} where T<:Tuple where names)} in module Lux at /home/astro/phupfb/.julia/packages/Lux/68T9j/src/chainrules.jl:17 overwritten in module ChainRules at /home/astro/phupfb/.julia/packages/ChainRules/14CDN/src/rulesets/Base/base.jl:347.
-ERROR: Method overwriting is not permitted during Module precompilation. Use `__precompile__(false)` to opt-out of precompilation.
-/var/spool/slurmd/job5493323/slurm_script: line 10: 3138403 Killed                  julia --project=. high_entropy_POPS.jl
-slurmstepd: error: Detected 1 oom_kill event in StepId=5493323.batch. Some of the step tasks have been OOM Killed.
