@@ -17,7 +17,7 @@ model  = result.model
 
 @testset "create_model" begin
 
-    a_eq = relax_lattice_constant(model, :Al)   # Float64, unitless Å
+    a_eq = ACEWorkflow.relax_lattice_constant(model, :Al)   # Float64, unitless Å
 
     # ── Test 1: zero strain → strained_cell_energy == potential_energy(bulk) ──
     #
@@ -41,7 +41,7 @@ model  = result.model
 
     # ── Test 3: strain_hessian_GPa satisfies Born stability criteria ──────────
     @testset "Born stability" begin
-        res       = strain_hessian_GPa(model, :Al; a=a_eq)
+        res       = ACEWorkflow.strain_hessian_GPa(model, :Al; a=a_eq)
         C11, C12, C44 = res.C[1,1], res.C[1,2], res.C[4,4]
         @test C44        > 0    # shear stable
         @test C11 - C12  > 0    # tetragonal stability

@@ -19,7 +19,7 @@ del_lattice_constant_design(a; model=model, element=:Al) = ForwardDiff.derivativ
 #     a_pops[i] = dot(dB, POPS_corrections[i,:])
 # end
 
-fig = Figure()
-ax  = Axis(fig[1,1], xlabel="δE/δa", ylabel="Counts")
-hist!(ax, a_pops, normalization=:pdf, bins=100)
-save("high_entropy_POPS/smoothness_5_delta_a.png", fig) 
+# fig = Figure()
+# ax  = Axis(fig[1,1], xlabel="δE/δa", ylabel="Counts")
+# hist!(ax, a_pops, normalization=:pdf, bins=100)
+# save("high_entropy_POPS/smoothness_5_delta_a.png", fig) 

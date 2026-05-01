@@ -18,6 +18,7 @@ using ACEWorkflow          # load_model, relax_lattice_constant,
 using ACEpotentials        # ACEpotentials.Models.get_linear_parameters
 using LinearAlgebra        # det
 using DelimitedFiles       # writedlm
+using Unitful
 
 # ── 1. Load model ──────────────────────────────────────────────────────────────
 #   Loads JSON + A/Y/P/W/lin_params from models/Al_20_5_6A_3/.
@@ -30,7 +31,7 @@ println("Loaded:  $(result.name)   ($(length(θ)) parameters)")
 # ── 2. Relax lattice constant ──────────────────────────────────────────────────
 #   Minimises energy-per-atom w.r.t. scalar `a` using Brent's method.
 a_eq = relax_lattice_constant(model, :Al)
-println("a₀      = $a_eq Å")
+println("a₀      = $(ustrip(a_eq)) Å")
 
 # ── 3. Strain Hessian basis ────────────────────────────────────────────────────
 #   H_basis[α, β, k] = ∂²Φₖ/∂εα∂εβ |_{ε=0, a=a_eq}

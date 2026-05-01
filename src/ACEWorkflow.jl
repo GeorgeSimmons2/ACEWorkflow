@@ -24,6 +24,8 @@ export dynamical_matrix, dynamical_matrix_basis_at_k, dynamical_matrix_at_k
 export unstable_modes
 export apply_mode, apply_mode_design, apply_mode_energy
 export second_deriv_of_model, second_deriv_of_model_dotted
+export strained_cell_design_prescaled
+export strain_hessian_lattice_constant_derivative, strain_hessian_lattice_constant_derivative_ad
 export relax_lattice_constant, strain_hessian_GPa
 
 # Re-export Phonons

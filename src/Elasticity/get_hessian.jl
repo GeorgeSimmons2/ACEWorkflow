@@ -28,7 +28,7 @@ function reference_system(element; a=nothing)
         return bulk(element)
     else
         a_u = a isa Unitful.Quantity ? a : a * u"Å"
-        return bulk(element; a=a_u)
+        return bulk(element; a=a_u, T=typeof(ustrip(a_u)))
     end
 end
 
@@ -112,6 +112,25 @@ function strained_cell_design(ε::SVector{6,T}; model, element, a=nothing) where
     # rebuild with unitful lattice + unitful positions
     sys1 = rebuild_periodic_system_unitful(sys0; Lnew_unitless=L1, fracs=fracs)
 
+    return ACEpotentials.Models.potential_energy_basis(sys1, model)
+end
+
+# Variant that expresses the lattice-constant change as an isotropic pre-scale δ
+# applied to a fixed Float64 reference geometry (so bulk() is never touched by Duals).
+# F = (1+δ)(I + ε_Voigt),  a = a_eq*(1+δ)  =>  ∂/∂a = (1/a_eq)*∂/∂δ
+# This allows nested ForwardDiff: outer derivative w.r.t. δ, inner Hessian w.r.t. ε.
+function strained_cell_design_prescaled(ε, δ::Tδ;
+                                        model, element, a_eq::Float64) where {Tδ}
+    # Accept any AbstractVector for ε (plain Vector or SVector) so that
+    # ForwardDiff.hessian can be called with a plain Vector and never triggers
+    # the ForwardDiffStaticArraysExt path, which doesn't support nested Duals.
+    sys0  = reference_system(element; a=a_eq)   # plain Float64 — never sees Duals
+    ϵ     = Voigt_strain_to_3x3(SVector{6}(ε))  # convert after Duals are established
+    F     = (1 + δ) * (ϵ + one(ϵ))             # all Dual arithmetic lives here
+    L0    = SMatrix{3,3,Float64}(ustrip.(lattice_matrix(sys0.cell.cell_vectors)))
+    L1    = F * L0
+    fracs = fractional_positions_unitless(sys0)
+    sys1  = rebuild_periodic_system_unitful(sys0; Lnew_unitless=L1, fracs=fracs)
     return ACEpotentials.Models.potential_energy_basis(sys1, model)
 end
 
@@ -732,7 +751,7 @@ function test_phonon_design_matrix(model; element=:Al, tol=1e-6)
     println("========================================")
 
     sys = bulk(element)
-    θ   = ACEpotentials.Models.get_linear_parameters(model)
+    θ   = vcat(model.ps[1], model.ps[2])
     Nat = length(sys)
     N3  = 3 * Nat
     a   = ustrip(sys.cell.cell_vectors[1][1])   # lattice constant (Å)
@@ -823,7 +842,7 @@ function relax_lattice_constant(model, element::Symbol)
     sys = reference_system(element)
     res = minimize_energy!(sys, model; variablecell=true)
     optsys = res.system
-    return optsys.cell.cell_vectors[1][2] * 2
+    return ustrip(u"Å", optsys.cell.cell_vectors[1][2] * 2)  # plain Float64 in Å
 end
 
 """
@@ -845,9 +864,60 @@ function strain_hessian_GPa(model, element::Symbol; a=nothing)
     sys0 = reference_system(element; a=a_eq)
     L    = SMatrix{3,3,Float64}(ustrip.(lattice_matrix(sys0.cell.cell_vectors)))
     V    = abs(det(L))                                           # unit-cell volume, Å³
-    θ    = ACEpotentials.Models.get_linear_parameters(model)
+    θ    = vcat(model.ps[1], model.ps[2])
     H    = elastic_hessian_basis(model; element=element, a=a_eq) # (6,6,n_params) eV
     C_eV = dropdims(sum(H .* reshape(θ, 1, 1, :); dims=3); dims=3) # (6,6) eV
     C    = C_eV .* (160.2176621 / V)                             # GPa
     return (C = C, H_basis = H, a_eq = a_eq)
+end
+
+function strain_hessian_lattice_constant_derivative(model, element::Symbol; a=nothing, h=1e-4)
+    a_eq = isnothing(a) ? relax_lattice_constant(model, element) : Float64(a)
+    # elastic_hessian_basis uses ForwardDiff.hessian internally (w.r.t. ε), so
+    # differentiating it w.r.t. a via AD would require nested Duals through all
+    # hardcoded SMatrix/Array{Float64} types. Use central FD for the outer derivative.
+    H_functions(a_val) = elastic_hessian_basis(model; element=element, a=Float64(a_val))
+    δH_δa(a_val) = (H_functions(a_val + h) - H_functions(a_val - h)) / (2h)
+    return δH_δa
+end
+
+"""
+    strain_hessian_lattice_constant_derivative_ad(model, element; a=nothing)
+
+AD-based analogue of `strain_hessian_lattice_constant_derivative`.
+
+Uses `strained_cell_design_prescaled` to express the lattice-constant change as
+an isotropic pre-scale δ = (a-a_eq)/a_eq on a fixed Float64 reference geometry,
+so `bulk` is never called with Dual arguments.  Nested ForwardDiff is then valid:
+the outer `derivative` w.r.t. δ uses one tag, the inner `hessian` w.r.t. ε uses
+another, and they compose correctly.
+
+Returns a function `δH_δa(a_val)` → 6×6×n_params array (same interface as the
+finite-difference version).
+"""
+function strain_hessian_lattice_constant_derivative_ad(model, element::Symbol; a=nothing)
+    a_eq    = isnothing(a) ? relax_lattice_constant(model, element) : Float64(a)
+    ε0_svec = @SVector zeros(6)
+    ε0_vec  = zeros(6)   # plain Vector — avoids ForwardDiffStaticArraysExt path
+    n_params = length(strained_cell_design_prescaled(ε0_svec, 0.0;
+                           model=model, element=element, a_eq=a_eq))
+
+    δH_δa(a_val::Float64) = begin
+        δ_val = (a_val - a_eq) / a_eq
+        dH = zeros(6, 6, n_params)
+        for k in 1:n_params
+            # Use plain Vector throughout — never SVector — so ForwardDiff uses
+            # the generic chunk path, not ForwardDiffStaticArraysExt, which
+            # doesn't support nested Dual types.
+            dHk_dδ = ForwardDiff.derivative(δ_val) do δ
+                ForwardDiff.hessian(ε0_vec) do ε
+                    ustrip(strained_cell_design_prescaled(ε, δ;
+                        model=model, element=element, a_eq=a_eq)[k])
+                end
+            end
+            dH[:, :, k] = dHk_dδ ./ a_eq
+        end
+        return dH
+    end
+    return δH_δa
 end
