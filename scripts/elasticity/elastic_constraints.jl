@@ -34,8 +34,8 @@ println("Computing b′ ...")
 b_prime = ForwardDiff.derivative(lattice_basis, a_eq)
 
 # ── Constrained ridge regression ──────────────────────────────────────────────
-function constrained_ridge_regression(X_train, Y_train, Gamma, constraint_matrix, constraint_bounds)
-    H = (X_train' * X_train .+ (1.0 / (size(X_train, 1)) .* Gamma' * Gamma))
+function constrained_ridge_regression(X_train, Y_train, Gamma, constraint_matrix, constraint_bounds; lambda = 1.0 / size(X_train, 1))
+    H = (X_train' * X_train .+ (lambda .* Gamma' * Gamma))
     b = - X_train' * Y_train
     osqp_model = OSQP.Model()
     OSQP.setup!(osqp_model; P=sparse(H), q=b, A=sparse(constraint_matrix / Gamma), l=constraint_bounds[1], u=constraint_bounds[2],
@@ -89,7 +89,7 @@ upper_bounds    = [C11_upper, C44_upper,
 
 constraints = (lower_bounds, upper_bounds)
 
-constrained_ridge_teta = constrained_ridge_regression(Ap, Yw, P, all_constraints, constraints)
+constrained_ridge_teta = constrained_ridge_regression(Ap, Yw, P, all_constraints, constraints; lambda=0.0)
 
 # ── eV → GPa conversion ───────────────────────────────────────────────────────
 sys0      = ACEWorkflow.Elasticity.reference_system(:Al; a=a_eq)

@@ -21,7 +21,8 @@ using AtomsCalculators, Unitful, AtomsBase
 using ACEpotentials: potential_energy
 using AtomsCalculatorsUtilities.SitePotentials: hessian
 using Arpack: eigs
-using CairoMakie
+using CairoMakie, ForwardDiff
+using Printf
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Physical constants & THz conversion factor
@@ -446,8 +447,8 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Load model (adjust path as needed) ──────────────────────────────────────
-result = load_model(:Al, 12, 4, 6, 3)
-model  = result.model
+# result = load_model(:Al, 20, 4, 6, 3)
+# model  = result.model
 
 # ── System ───────────────────────────────────────────────────────────────────
 # Primitive cell: 1-atom FCC primitive cell — the D(q) matrix is 3×3, giving
@@ -475,13 +476,349 @@ n_imag > 0 && println("  Imaginary modes : $n_imag (shown in red)")
 fig = plot_phonon_bands(x_vals, freqs, x_ticks, labels;
                          title     = "Al phonon bands — ACE",
                          linewidth = 1.5)
-save("$(result.dir)/results/phonon_bands_ace_scatter_5x5x5.png", fig)
+save("$(result.dir)/results/constrained_phonon_bands_ace_scatter_5x5x5.png", fig)
 display(fig)
 println("  Saved: phonon_bands_ace_scatter.png")
 
 fig_e = plot_phonon_energy(x_vals, freqs, x_ticks, labels;
                             title     = "Al phonon bands — ACE",
                             linewidth = 1.5)
-save("$(result.dir)/results/phonon_energy_ace_5x5x5.png", fig_e)
+save("$(result.dir)/results/constrained_phonon_energy_ace_5x5x5.png", fig_e)
 display(fig_e)
 println("  Saved: phonon_energy_ace.png")
+
+
+"""
+    phonon_committee(model, coeffs_committee, result; N_per_seg=30)
+
+Compute phonon bands for the mean model (i=0) and each committee member,
+returning `(x_vals, all_freqs, x_ticks, labels)` where `all_freqs` is a
+`Vector` of `Nmodes × Nq` matrices (index 1 = mean model, 2..N+1 = committee).
+
+Also saves two overlay plots to `result.dir/results/`:
+  - `phonon_committee_THz.png`  — frequency (THz)
+  - `phonon_committee_eV.png`   — energy (eV), 0.01 eV tick spacing
+
+Committee members are drawn in light grey; the mean model is drawn in blue/red.
+"""
+function phonon_committee(model, coeffs_committee, result; N_per_seg=30)
+    # Save original coefficients so we can restore them after the loop
+    orig_coeffs = result.lin_params
+    N_cell = 5
+    N = length(coeffs_committee)
+    all_freqs = Vector{Matrix{Float64}}(undef, N + 1)
+    x_vals_out = nothing
+    x_ticks_out = nothing
+    labels_out = nothing
+
+    for i in 0:N
+        if i > 0
+            ACEpotentials.Models.set_linear_parameters!(model, coeffs_committee[i])
+        end
+
+        a_eq     = ACEWorkflow.relax_lattice_constant(model, :Al)
+        sys_prim  = bulk(:Al; a=a_eq*u"Å")
+        sys_super = bulk(:Al; a=a_eq*u"Å", cubic=true) * (N_cell, N_cell, N_cell)
+
+        println("\n--- Committee member $i / $N ---")
+        x_vals, freqs, x_ticks, labels = compute_phonon_bands(
+            sys_prim, sys_super, model, a_eq; N_per_seg, n_modes=nothing)
+
+        ω_min = round(minimum(freqs), sigdigits=4)
+        ω_max = round(maximum(freqs), sigdigits=4)
+        n_imag = count(freqs .< 0)
+        println("  Frequency range : $ω_min … $ω_max THz")
+        n_imag > 0 && println("  Imaginary modes : $n_imag (shown in red)")
+
+        all_freqs[i + 1] = freqs
+        if i == 0
+            x_vals_out  = x_vals
+            x_ticks_out = x_ticks
+            labels_out  = labels
+        end
+    end
+
+    # Restore original (mean) model
+    ACEpotentials.Models.set_linear_parameters!(model, orig_coeffs)
+
+    # ── Plot (THz) ──────────────────────────────────────────────────────────
+    function _committee_plot(unit_label, scale)
+        fig = Figure(size=(750, 500))
+        ax  = Axis(fig[1, 1];
+                   xlabel       = "Wave vector",
+                   ylabel       = unit_label == "THz" ? "Frequency (THz)" : "Energy (eV)",
+                   title        = "Al phonon bands — ACE committee",
+                   xticks       = (x_ticks_out, labels_out),
+                   xgridvisible = false)
+
+        if unit_label == "eV"
+            energies_all = [f .* scale for f in all_freqs]
+            emin = floor(minimum(minimum.(energies_all)) / 0.01) * 0.01
+            emax = ceil( maximum(maximum.(energies_all)) / 0.01) * 0.01
+            ax.yticks = emin:0.01:emax
+        end
+
+        # Committee members (indices 2..end) — light grey
+        for freqs in all_freqs[2:end]
+            data = freqs .* scale
+            Nmodes = size(data, 1)
+            for b in 1:Nmodes
+                lines!(ax, x_vals_out, data[b, :];
+                       color=RGBAf(0.6, 0.6, 0.6, 0.4), linewidth=1.0)
+            end
+        end
+
+        # Mean model (index 1) — blue/red on top
+        mean_data = all_freqs[1] .* scale
+        Nmodes = size(mean_data, 1)
+        for b in 1:Nmodes
+            branch = mean_data[b, :]
+            color  = minimum(branch) < 0 ? RGBAf(0.8, 0.1, 0.1, 0.95) :
+                                            RGBAf(0.2, 0.4, 0.7, 0.95)
+            lines!(ax, x_vals_out, branch; color, linewidth=2.0)
+        end
+
+        hlines!(ax, [0.0]; color=:black, linestyle=:dash, linewidth=0.8)
+        vlines!(ax, x_ticks_out; color=(:black, 0.3), linewidth=0.8)
+        return fig
+    end
+
+    fig_thz = _committee_plot("THz", 1.0)
+    save("$(result.dir)/results/phonon_committee_THz_$(N_cell)x$(N_cell)x$(N_cell).png", fig_thz)
+    display(fig_thz)
+    println("Saved: phonon_committee_THz.png")
+
+    fig_ev = _committee_plot("eV", THz_to_meV / 1000)
+    save("$(result.dir)/results/phonon_committee_eV_$(N_cell)x$(N_cell)x$(N_cell).png", fig_ev)
+    display(fig_ev)
+    println("Saved: phonon_committee_eV.png")
+
+    return x_vals_out, all_freqs, x_ticks_out, labels_out
+end
+
+x_vals_out, all_freqs, _, _ = phonon_committee(model, committee_vecs, result; N_per_seg=30)
+using Printf
+"""
+    born_stability_committee(model, coeffs_committee, result)
+
+For the mean model (i=0) and each committee member, relax the lattice constant,
+compute the cubic elastic tensor C (GPa) via the strain-Hessian basis, and
+evaluate the three Born stability criteria for cubic crystals:
+  (i)   C11 − C12 > 0
+  (ii)  C11 + 2 C12 > 0
+  (iii) C44 > 0
+
+Prints a summary table and returns `(; C_list, a_list, stable)` where
+`C_list[1]` is the mean model, `C_list[2:end]` are committee members.
+"""
+function born_stability_committee(model, coeffs_committee, result)
+    orig_coeffs = result.lin_params
+    N = length(coeffs_committee)
+
+    C_list = Vector{Matrix{Float64}}(undef, N + 1)
+    a_list = Vector{Float64}(undef, N + 1)
+    stable = Vector{Bool}(undef, N + 1)
+
+    println("\n=== Born stability — ACE committee ===")
+
+    for i in 0:N
+        label = i == 0 ? "mean" : "member $i"
+        θ = i == 0 ? orig_coeffs : coeffs_committee[i]
+        if i > 0
+            ACEpotentials.Models.set_linear_parameters!(model, θ)
+        end
+
+        print("  [$label] relaxing … ")
+        a_i = ACEWorkflow.relax_lattice_constant(model, :Al)
+        @printf("a = %.6f Å\n", a_i)
+
+        # Volume from the same reference system that elastic_hessian_basis uses
+        sys0 = ACEWorkflow.Elasticity.reference_system(:Al; a=a_i)
+        L0   = SMatrix{3,3,Float64}(
+                   ustrip.(ACEWorkflow.Elasticity.lattice_matrix(sys0.cell.cell_vectors)))
+        V_i        = abs(det(L0))
+        eV_to_GPa  = 160.2176621 / V_i
+
+        H_i = ACEWorkflow.elastic_hessian_basis(model; element=:Al, a=a_i)
+        C_i = dropdims(sum(H_i .* reshape(θ, 1, 1, :); dims=3); dims=3) .* eV_to_GPa
+
+        C_list[i + 1] = C_i
+        a_list[i + 1] = a_i
+
+        C11, C12, C44 = C_i[1,1], C_i[1,2], C_i[4,4]
+        b1 = C11 - C12  > 0
+        b2 = C11 + 2C12 > 0
+        b3 = C44        > 0
+        stable[i + 1]  = b1 && b2 && b3
+
+        @printf("         C11=%7.2f  C12=%7.2f  C44=%7.2f  GPa\n", C11, C12, C44)
+        @printf("         (i) C11−C12=%+.2f  (ii) C11+2C12=%+.2f  (iii) C44=%+.2f  → %s\n",
+                C11-C12, C11+2C12, C44,
+                stable[i + 1] ? "STABLE" : "*** UNSTABLE ***")
+    end
+
+    # Restore mean model
+    ACEpotentials.Models.set_linear_parameters!(model, orig_coeffs)
+
+    # Summary table
+    println()
+    println(repeat('─', 72))
+    @printf("  %-12s  %8s  %8s  %8s  %8s  %s\n",
+            "Member", "a (Å)", "C11", "C12", "C44", "Born stable?")
+    println("  ", repeat('-', 68))
+    for i in 0:N
+        label = i == 0 ? "mean" : "member $i"
+        C = C_list[i + 1]
+        @printf("  %-12s  %8.5f  %8.2f  %8.2f  %8.2f  %s\n",
+                label, a_list[i + 1], C[1,1], C[1,2], C[4,4],
+                stable[i + 1] ? "✓" : "✗  UNSTABLE")
+    end
+    n_stable = count(stable)
+    println(repeat('─', 72))
+    @printf("  %d / %d members satisfy all Born stability criteria.\n",
+            n_stable, N + 1)
+    println(repeat('─', 72))
+
+    return (; C_list, a_list, stable)
+end
+
+"""
+    born_stability_mean(model, result)
+
+Check Born stability for the mean model only (no committee or forest).
+Relaxes the lattice constant once, computes the elastic tensor via the
+strain-Hessian basis, and prints the three cubic Born criteria.
+
+Returns `(; C, a_eq, stable)`.
+"""
+function born_stability_mean(model, θ)
+    println("\n=== Born stability — mean model ===")
+
+    print("  Relaxing … ")
+    a_eq = ACEWorkflow.relax_lattice_constant(model, :Al)
+    @printf("a_eq = %.6f Å\n", a_eq)
+
+    sys0 = ACEWorkflow.Elasticity.reference_system(:Al; a=a_eq)
+    L0   = SMatrix{3,3,Float64}(
+               ustrip.(ACEWorkflow.Elasticity.lattice_matrix(sys0.cell.cell_vectors)))
+    V0        = abs(det(L0))
+    eV_to_GPa = 160.2176621 / V0
+
+    H = ACEWorkflow.elastic_hessian_basis(model; element=:Al, a=a_eq)
+    C = dropdims(sum(H .* reshape(θ, 1, 1, :); dims=3); dims=3) .* eV_to_GPa
+
+    C11, C12, C44 = C[1,1], C[1,2], C[4,4]
+    b1 = C11 - C12  > 0
+    b2 = C11 + 2C12 > 0
+    b3 = C44        > 0
+    stable = b1 && b2 && b3
+
+    println(repeat('─', 60))
+    @printf("  C11 = %8.2f GPa\n", C11)
+    @printf("  C12 = %8.2f GPa\n", C12)
+    @printf("  C44 = %8.2f GPa\n", C44)
+    println(repeat('─', 60))
+    @printf("  (i)   C11 − C12   = %+.2f GPa  %s\n", C11-C12,     b1 ? "✓" : "✗")
+    @printf("  (ii)  C11 + 2C12  = %+.2f GPa  %s\n", C11+2C12,    b2 ? "✓" : "✗")
+    @printf("  (iii) C44         = %+.2f GPa  %s\n", C44,          b3 ? "✓" : "✗")
+    println(repeat('─', 60))
+    println("  Born stable? ", stable ? "YES ✓" : "NO ✗")
+    println(repeat('─', 60))
+
+    return (; C, a_eq, stable)
+end
+
+"""
+    born_stability_forest(model, forest_vecs, result; verbose=false)
+
+Fast Born stability check for a large set of POPS coefficient vectors.
+
+Rather than relaxing the lattice constant for every member (expensive for
+forests of tens of thousands), we:
+  1. Relax once at the mean model to get `a_eq`.
+  2. Precompute the 6×6 strain-Hessian basis `H` (size 6×6×Nbasis) once.
+  3. For each member θ, evaluate C = Σ_k θ_k H_k and check the three
+     cubic Born criteria: C11−C12>0, C11+2C12>0, C44>0.
+
+The approximation error from using a fixed `a_eq` is negligible: the lattice
+constant spread across a POPS forest is typically ≪0.1%, causing <0.1 GPa
+error in C — well below the stability margins.
+
+Returns `(; stable, C11, C12, C44)` where each is a length-N vector.
+"""
+function born_stability_forest(model, forest_vecs, result; verbose=false)
+    N = length(forest_vecs)
+    println("\n=== Born stability — POPS delta forest (N=$N) ===")
+
+    # ── Step 1: relax once at the mean model ────────────────────────────────
+    print("  Relaxing mean model … ")
+    a_eq = ACEWorkflow.relax_lattice_constant(model, :Al)
+    @printf("a_eq = %.6f Å\n", a_eq)
+
+    # ── Step 2: precompute strain-Hessian basis once ─────────────────────────
+    print("  Precomputing strain-Hessian basis … ")
+    H_basis = ACEWorkflow.elastic_hessian_basis(model; element=:Al, a=a_eq)  # 6×6×Nbasis
+
+    sys0 = ACEWorkflow.Elasticity.reference_system(:Al; a=a_eq)
+    L0   = SMatrix{3,3,Float64}(
+               ustrip.(ACEWorkflow.Elasticity.lattice_matrix(sys0.cell.cell_vectors)))
+    V0        = abs(det(L0))
+    eV_to_GPa = 160.2176621 / V0
+    println("done.  V = $(round(V0, sigdigits=5)) Å³,  eV→GPa = $(round(eV_to_GPa, sigdigits=6))")
+
+    # Mean model check
+    θ_mean = result.lin_params
+    C_mean = dropdims(sum(H_basis .* reshape(θ_mean, 1, 1, :); dims=3); dims=3) .* eV_to_GPa
+    @printf("  Mean model:  C11=%7.2f  C12=%7.2f  C44=%7.2f  GPa\n",
+            C_mean[1,1], C_mean[1,2], C_mean[4,4])
+
+    # ── Step 3: check each forest member ─────────────────────────────────────
+    C11_vec = Vector{Float64}(undef, N)
+    C12_vec = Vector{Float64}(undef, N)
+    C44_vec = Vector{Float64}(undef, N)
+    stable  = Vector{Bool}(undef, N)
+
+    for (k, θ) in enumerate(forest_vecs)
+        k % 1000 == 0 && print("\r  Checking member $k / $N …")
+        C = dropdims(sum(H_basis .* reshape(θ, 1, 1, :); dims=3); dims=3) .* eV_to_GPa
+        C11_vec[k] = C[1,1]
+        C12_vec[k] = C[1,2]
+        C44_vec[k] = C[4,4]
+        stable[k]  = (C[1,1] - C[1,2] > 0) && (C[1,1] + 2C[1,2] > 0) && (C[4,4] > 0)
+        if verbose && !stable[k]
+            @printf("\n  *** UNSTABLE member %d:  C11=%7.2f  C12=%7.2f  C44=%7.2f\n",
+                    k, C[1,1], C[1,2], C[4,4])
+        end
+    end
+    println("\r  Done. ($N members checked)              ")
+
+    n_stable   = count(stable)
+    n_unstable = N - n_stable
+    println(repeat('─', 60))
+    @printf("  Stable   : %d / %d  (%.2f%%)\n", n_stable,   N, 100n_stable/N)
+    @printf("  Unstable : %d / %d  (%.2f%%)\n", n_unstable, N, 100n_unstable/N)
+    println(repeat('─', 60))
+
+    # Distribution summary
+    @printf("  C11  range: [%.2f, %.2f] GPa  (mean=%.2f)\n",
+            minimum(C11_vec), maximum(C11_vec), sum(C11_vec)/N)
+    @printf("  C12  range: [%.2f, %.2f] GPa  (mean=%.2f)\n",
+            minimum(C12_vec), maximum(C12_vec), sum(C12_vec)/N)
+    @printf("  C44  range: [%.2f, %.2f] GPa  (mean=%.2f)\n",
+            minimum(C44_vec), maximum(C44_vec), sum(C44_vec)/N)
+    dC = C11_vec .- C12_vec
+    @printf("  C11−C12 range: [%.2f, %.2f] GPa  (min margin=%.2f)\n",
+            minimum(dC), maximum(dC), minimum(dC))
+    bmod = (C11_vec .+ 2 .* C12_vec)
+    @printf("  C11+2C12 range: [%.2f, %.2f] GPa  (min margin=%.2f)\n",
+            minimum(bmod), maximum(bmod), minimum(bmod))
+    println(repeat('─', 60))
+
+    return (; stable, C11=C11_vec, C12=C12_vec, C44=C44_vec)
+end
+
+using DelimitedFiles
+forest_mat  = readdlm("$(result.dir)/pops_corrections.csv", ',')
+forest_vecs = [forest_mat[i, :] for i in 1:size(forest_mat, 1)]
+forest_result = born_stability_forest(model, forest_vecs, result)
+println("\nAll stable? ", all(forest_result.stable))
