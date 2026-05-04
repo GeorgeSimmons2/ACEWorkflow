@@ -11,16 +11,20 @@ containing only the rows where every parameter lies within its bounds.
 function quantile_filter(corrections::AbstractMatrix{Float64}, eta::Float64)
     N, d = size(corrections)
 
-    lower = [quantile(corrections[:, j], eta)       for j in 1:d]
-    upper = [quantile(corrections[:, j], 1.0 - eta) for j in 1:d]
+    eig     = eigen(Symmetric(corrections' * corrections))
+    W_mat   = eig.vectors * Diagonal(1 ./ sqrt.(max.(eig.values, 1e-14)))
+    whitened = corrections * W_mat   # N×d, each column has unit variance
+
+    lower = [quantile(whitened[:, j], eta)       for j in 1:d]
+    upper = [quantile(whitened[:, j], 1.0 - eta) for j in 1:d]
 
     keep = Vector{Int}()
     for i in 1:N
-        in_bounds = all(lower[j] <= corrections[i, j] <= upper[j] for j in 1:d)
+        in_bounds = all(lower[j] <= whitened[i, j] <= upper[j] for j in 1:d)
         in_bounds && push!(keep, i)
     end
 
-    return corrections[keep, :]
+    return corrections[keep, :]   # return original-space rows
 end
 model_description = "Al_20_5_6A_3"
 result = load_model(:Al, 20, 5, 6.0, 3)

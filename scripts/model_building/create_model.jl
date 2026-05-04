@@ -213,25 +213,25 @@ negative_POPS_deltas = POPS_delta[negative_indices, :]
 # end
 
 
-function constrained_pops(X_train, Y_train, constraint_matrix, lower_constraint_value, upper_constraint_value; members_to_constrain=1:length(Y_train))
-    constrained_pops_parameters = zeros(length(collect(members_to_constrain)), size(X_train, 2))
-    H = X_train' * X_train
-    b = - X_train' * Y_train
-    j=0
-    for i=members_to_constrain
-        j+=1
-        A_full = vcat(constraint_matrix, X_train[i,:]')
-        l_full = vcat(lower_constraint_value, Y_train[i])
-        u_full = vcat(upper_constraint_value, Y_train[i])
-        println(size(A_full), size(l_full))
-        model = OSQP.Model()
-        OSQP.setup!(model; P=sparse(H), q=b, A=sparse(A_full), l=l_full, u=u_full, 
-                    alpha=0.5, verbose=true, max_iter=5_000, check_termination=500)
-        results = OSQP.solve!(model)
-        constrained_pops_parameters[j,:] = results.x
-    end
-    return constrained_pops_parameters
-end
+# function constrained_pops(X_train, Y_train, constraint_matrix, lower_constraint_value, upper_constraint_value; members_to_constrain=1:length(Y_train))
+#     constrained_pops_parameters = zeros(length(collect(members_to_constrain)), size(X_train, 2))
+#     H = X_train' * X_train
+#     b = - X_train' * Y_train
+#     j=0
+#     for i=members_to_constrain
+#         j+=1
+#         A_full = vcat(constraint_matrix, X_train[i,:]')
+#         l_full = vcat(lower_constraint_value, Y_train[i])
+#         u_full = vcat(upper_constraint_value, Y_train[i])
+#         println(size(A_full), size(l_full))
+#         model = OSQP.Model()
+#         OSQP.setup!(model; P=sparse(H), q=b, A=sparse(A_full), l=l_full, u=u_full, 
+#                     alpha=0.5, verbose=true, max_iter=5_000, check_termination=500)
+#         results = OSQP.solve!(model)
+#         constrained_pops_parameters[j,:] = results.x
+#     end
+#     return constrained_pops_parameters
+# end
 
 # all_C_ij = vcat(H_6x6xd[1,1,:]', H_6x6xd[1,2,:]', H_6x6xd[4,4,:]')
 # lower_c = [0.0, 0.0, 0.0]
@@ -269,7 +269,17 @@ end
 # constrained_committee, δθ = rejection_sample_hypercube(hypercube_eigs, hypercube_bounds, lin_params, all_C_ij, lower_c, upper_c)
 # constrained_co_ps_vec = [constrained_committee[:, i] for i = 1:size(constrained_committee,2)]
 
-# function base_constrained_pops(X_train, Y_train, Gamma; members_to_constrain=1:length(Y_train))
+function constrained_ridge_regression(X_train, Y_train, Gamma, constraint_matrix, constraint_bounds)
+    H = (X_train' * X_train .+ (1.0 / (size(X_train, 1)) .* Gamma' * Gamma))
+    b = - X_train' * Y_train
+    model = OSQP.Model()
+    OSQP.setup!(model; P=sparse(H), q=b, A=sparse(constraint_matrix / Gamma), l=constraint_bounds[1], u=constraint_bounds[2],
+                max_iter=500_000, check_termination=1_000, verbose=true)
+    results = OSQP.solve!(model)
+    return Gamma \ results.x
+end
+    
+# function base_constrained_pops(X_train, Y_train, Gamma, constraint_function, ; members_to_constrain=1:length(Y_train))
 #     constrained_pops_parameters = zeros(length(members_to_constrain),size(X_train, 2))#length(collect(members_to_constrain)), size(X_train, 2))
 #     H = (X_train' * X_train .+ (1.0 / (size(X_train, 1)) .* Gamma' * Gamma))
 #     b = - X_train' * Y_train

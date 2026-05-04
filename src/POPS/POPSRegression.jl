@@ -3,11 +3,13 @@ using LinearAlgebra, Statistics, Random
 export corrections, hypercube, sample_hypercube
 
 
-function corrections(X::AbstractMatrix{Float64}, Y::Vector{Float64}, Gamma::AbstractMatrix{Float64}; leverage_percentile::Float64 = 0.5, lambda::Float64 = 1.0 / size(X,1))
+function corrections(X::AbstractMatrix{Float64}, Y::Vector{Float64}, Gamma::AbstractMatrix{Float64}; leverage_percentile::Float64 = 0.5, lambda::Float64 = 1.0 / size(X,1), coeffs=nothing)
     C      = (Gamma' * Gamma .* lambda .+ X' * X)
     A      = C \ X'
     leverage = diag(X * A)
-    coeffs = C \ (X' * Y)
+    if (coeffs == nothing)
+        coeffs = C \ (X' * Y)
+    end
     errors = Y .- (X * coeffs)
     leverage_threshold = quantile(leverage, leverage_percentile)
     mask = leverage .>= leverage_threshold
