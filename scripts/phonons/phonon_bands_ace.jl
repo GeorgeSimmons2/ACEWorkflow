@@ -23,6 +23,7 @@ using AtomsCalculatorsUtilities.SitePotentials: hessian
 using Arpack: eigs
 using CairoMakie, ForwardDiff
 using Printf
+using DelimitedFiles
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Physical constants & THz conversion factor
@@ -442,13 +443,80 @@ function plot_phonon_energy(x_vals, freqs, x_ticks, labels;
     return fig
 end
 
+"""
+    plot_phonon_comparison(x_julia, freqs_julia, x_ticks, labels,
+                           x_phonopy, energies_phonopy;
+                           title="Phonon comparison — ACE Julia vs Phonopy",
+                           linewidth=1.5)
+
+Overlay phonon band structures from the Julia (ACE dynamical-matrix) and
+Phonopy (ASE) implementations on the same axes, in eV.
+
+Arguments:
+  - `x_julia`           : x-coordinates from `compute_phonon_bands` (length Nq_j)
+  - `freqs_julia`       : Nmodes × Nq_j matrix in THz from `compute_phonon_bands`
+  - `x_ticks`, `labels` : high-symmetry tick positions and labels (from Julia path)
+  - `x_phonopy`         : x-coordinates from Phonopy/ASE (length Nq_p), as a Vector
+  - `energies_phonopy`  : Nq_p × Nbands matrix in eV (as written by np.savetxt)
+
+Julia bands are drawn in blue (stable) / red (imaginary).
+Phonopy bands are drawn in semi-transparent orange.
+"""
+function plot_phonon_comparison(x_julia, freqs_julia, x_ticks, labels,
+                                x_phonopy, energies_phonopy;
+                                title="Phonon comparison — ACE Julia vs Phonopy",
+                                linewidth=1.5)
+    energy_julia = freqs_julia .* (THz_to_meV / 1000)   # THz → eV
+    Nmodes_j, Nq_j = size(energy_julia)
+
+    # phonopy: rows = k-points, cols = bands  →  transpose for branch-wise iteration
+    energy_ph = energies_phonopy'   # Nbands × Nq_p
+    Nbands_p  = size(energy_ph, 1)
+    x_ph      = vec(x_phonopy)
+
+    emin = floor(min(minimum(energy_julia), minimum(energy_ph)) / 0.01) * 0.01
+    emax = ceil( max(maximum(energy_julia), maximum(energy_ph)) / 0.01) * 0.01
+
+    fig = Figure(size=(800, 520))
+    ax  = Axis(fig[1, 1];
+               xlabel       = "Wave vector",
+               ylabel       = "Energy (eV)",
+               title        = title,
+               xticks       = (x_ticks, labels),
+               yticks       = emin:0.01:emax,
+               xgridvisible = false)
+
+    # Phonopy bands (drawn first so Julia sits on top)
+    for b in 1:Nbands_p
+        lines!(ax, x_ph, energy_ph[b, :];
+               color=RGBAf(0.85, 0.45, 0.05, 0.55), linewidth=linewidth)
+    end
+
+    # Julia bands
+    for b in 1:Nmodes_j
+        branch = energy_julia[b, :]
+        color  = minimum(branch) < 0 ? RGBAf(0.8, 0.1, 0.1, 0.9) : RGBAf(0.2, 0.4, 0.7, 0.9)
+        lines!(ax, x_julia, branch; color, linewidth)
+    end
+
+    hlines!(ax, [0.0]; color=:black, linestyle=:dash, linewidth=0.8)
+    vlines!(ax, x_ticks; color=(:black, 0.3), linewidth=0.8)
+
+    # Legend
+    elem_julia   = LineElement(color=RGBAf(0.2, 0.4, 0.7, 0.9), linewidth=linewidth)
+    elem_phonopy = LineElement(color=RGBAf(0.85, 0.45, 0.05, 0.55), linewidth=linewidth)
+    Legend(fig[1, 2], [elem_julia, elem_phonopy], ["Julia", "Phonopy (ASE)"])
+
+    return fig
+end
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Script
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Load model (adjust path as needed) ──────────────────────────────────────
-# result = load_model(:Al, 20, 4, 6, 3)
-# model  = result.model
+result = load_model(:Al, 12, 4, 6, 3)
+model  = result.model
 
 # ── System ───────────────────────────────────────────────────────────────────
 # Primitive cell: 1-atom FCC primitive cell — the D(q) matrix is 3×3, giving
@@ -459,9 +527,10 @@ end
 # Supercell: 3×3×3 conventional cell (∼12.15 Å sides) — must be ≥ 2× the ACE
 # cutoff (6 Å) so that Φ(i, j+R) decays to zero before the boundary.
 
+N = 5
 a_eq      = ACEWorkflow.relax_lattice_constant(model, :Al)
 sys_prim  = bulk(:Al; a=a_eq*u"Å")                         # 1 atom, 3 branches
-sys_super = bulk(:Al; a=a_eq*u"Å", cubic=true) * (5,5,5)   # 256 atoms, Hessian source
+sys_super = bulk(:Al; a=a_eq*u"Å", cubic=true) * (N,N,N)   # 256 atoms, Hessian source
 
 println("\n=== Phonon band structure (ACE) ===")
 x_vals, freqs, x_ticks, labels = compute_phonon_bands(sys_prim, sys_super, model, a_eq;
@@ -476,16 +545,19 @@ n_imag > 0 && println("  Imaginary modes : $n_imag (shown in red)")
 fig = plot_phonon_bands(x_vals, freqs, x_ticks, labels;
                          title     = "Al phonon bands — ACE",
                          linewidth = 1.5)
-save("$(result.dir)/results/constrained_phonon_bands_ace_scatter_5x5x5.png", fig)
+save("$(result.dir)/results/phonon_bands_ace_scatter_$(N)x$(N)x$(N).png", fig)
 display(fig)
 println("  Saved: phonon_bands_ace_scatter.png")
 
 fig_e = plot_phonon_energy(x_vals, freqs, x_ticks, labels;
                             title     = "Al phonon bands — ACE",
                             linewidth = 1.5)
-save("$(result.dir)/results/constrained_phonon_energy_ace_5x5x5.png", fig_e)
+save("$(result.dir)/results/phonon_energy_ace_$(N)x$(N)x$(N).png", fig_e)
 display(fig_e)
 println("  Saved: phonon_energy_ace.png")
+writedlm("$(result.dir)/results/phonon_energy_ace_$(N)x$(N)x$(N).csv", freqs .* (THz_to_meV / 1000), ',')
+writedlm("$(result.dir)/results/phonon_x_vals_ace_$(N)x$(N)x$(N).csv", x_vals, ',')
+
 
 
 """

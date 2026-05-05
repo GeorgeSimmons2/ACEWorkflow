@@ -117,6 +117,7 @@ function build_model(element::Symbol, totaldegree::Int, smoothness::Int,
     stride > 1 && (training_configs = training_configs[1:stride:end])
 
     # ── Build ACE model ───────────────────────────────────────────────────────
+    # use ace_model
     model = ace1_model(elements=[element], totaldegree=totaldegree,
                        order=order, rcut=rcut)
 
@@ -135,13 +136,6 @@ function build_model(element::Symbol, totaldegree::Int, smoothness::Int,
     A_reg    = Ap'*Ap .+ P'*P ./ size(Ap, 1)
     lin_params = P \ (A_reg \ (Ap' * Yw))
     ACEpotentials.Models.set_linear_parameters!(model, lin_params)
-
-    # ── POPS pointwise corrections ────────────────────────────────────────────
-    # load POPSRegression from the package src (avoids circular include)
-    pops_mod = Base.require(Main, :POPSRegression)
-    pops_corrections = pops_mod.corrections(Ap, Yw, P; leverage_percentile=0.0)
-
-    # ── Persist ───────────────────────────────────────────────────────────────
     json = joinpath(dir, "$(name).json")
     ACEpotentials.save_model(model, json)
     writedlm(joinpath(dir, "A.csv"),              A,               ',')
@@ -149,12 +143,20 @@ function build_model(element::Symbol, totaldegree::Int, smoothness::Int,
     writedlm(joinpath(dir, "P.csv"),              P,               ',')
     writedlm(joinpath(dir, "W.csv"),              W,               ',')
     writedlm(joinpath(dir, "lin_params.csv"),     lin_params,      ',')
-    writedlm(joinpath(dir, "pops_corrections.csv"), pops_corrections, ',')
+
+    # # ── POPS pointwise corrections ────────────────────────────────────────────
+    # # load POPSRegression from the package src (avoids circular include)
+    # pops_mod = Base.require(Main, :POPSRegression)
+    # pops_corrections = pops_mod.corrections(Ap, Yw, P; leverage_percentile=0.0)
+
+    # # ── Persist ───────────────────────────────────────────────────────────────
+
+    # writedlm(joinpath(dir, "pops_corrections.csv"), pops_corrections, ',')
 
     @info "Saved to $dir"
 
     return (model=model, A=A, Y=Yw, P=P, W=W,
-            lin_params=lin_params, pops_corrections=pops_corrections,
+            lin_params=lin_params, #pops_corrections=pops_corrections,
             name=name, dir=dir)
 end
 
