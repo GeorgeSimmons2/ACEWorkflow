@@ -1,0 +1,3 @@
+# Indices of POPS committee members with at least one imaginary X-point mode
+# Format: one index per line (1-based)
+# Generated: 2026-05-31T14:27:31.699

@@ -2,7 +2,7 @@
 
 julia_version = "1.11.8"
 manifest_format = "2.0"
-project_hash = "cf3ddd013c76dbead56519bd345e86b464ef0154"
+project_hash = "2aa95befcca4958c603625b0eadfbdee575ddd8d"
 
 [[deps.ACEbase]]
 deps = ["JSON", "LinearAlgebra", "Printf", "Reexport", "SparseArrays", "StaticArrays", "Test", "YAML", "ZipArchives"]
@@ -1086,6 +1086,23 @@ deps = ["Random"]
 uuid = "9fa8497b-333b-5362-9e8d-4d0656e87820"
 version = "1.11.0"
 
+[[deps.GLPK]]
+deps = ["GLPK_jll", "MathOptInterface"]
+git-tree-sha1 = "1d706bd23e5d2d407bfd369499ee6f96afb0c3ad"
+uuid = "60bf3e95-4087-53dc-ae20-288a0d20c6a6"
+version = "1.2.1"
+
+[[deps.GLPK_jll]]
+deps = ["Artifacts", "GMP_jll", "JLLWrappers", "Libdl", "Pkg"]
+git-tree-sha1 = "6aa6294ba949ccfc380463bf50ff988b46de5bc7"
+uuid = "e8aa6df9-e6ca-548a-97ff-1f85fc5b8b98"
+version = "5.0.1+1"
+
+[[deps.GMP_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "781609d7-10c4-51f6-84f2-b8444358ff6d"
+version = "6.3.0+0"
+
 [[deps.GPUArrays]]
 deps = ["Adapt", "GPUArraysCore", "KernelAbstractions", "LLVM", "LinearAlgebra", "Printf", "Random", "Reexport", "ScopedValues", "Serialization", "SparseArrays", "Statistics"]
 git-tree-sha1 = "34fd745547978beb471f029f447290ef4dbc7bbd"
@@ -1444,6 +1461,18 @@ git-tree-sha1 = "c0c9b76f3520863909825cbecdef58cd63de705a"
 uuid = "aacddb02-875f-59d6-b918-886e6ef4fbf8"
 version = "3.1.5+0"
 
+[[deps.JuMP]]
+deps = ["LinearAlgebra", "MacroTools", "MathOptInterface", "MutableArithmetics", "OrderedCollections", "PrecompileTools", "Printf", "SparseArrays"]
+git-tree-sha1 = "6941586d9cf3c0af718bc6e6250dcf24057d412e"
+uuid = "4076af6c-e467-56ae-b986-b466b2749572"
+version = "1.30.1"
+
+    [deps.JuMP.extensions]
+    JuMPDimensionalDataExt = "DimensionalData"
+
+    [deps.JuMP.weakdeps]
+    DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
+
 [[deps.JuliaInterpreter]]
 deps = ["CodeTracking", "InteractiveUtils", "Random", "UUIDs"]
 git-tree-sha1 = "58927c485919bf17ea308d9d82156de1adf4b006"
@@ -1524,6 +1553,12 @@ version = "1.11.0"
 git-tree-sha1 = "a560dd966b386ac9ae60bdd3a3d3a326062d3c3e"
 uuid = "8cdb02fc-e678-4876-92c5-9defec4f444e"
 version = "0.3.1"
+
+[[deps.LazySets]]
+deps = ["Distributed", "ExprTools", "GLPK", "IntervalArithmetic", "JuMP", "LinearAlgebra", "Random", "ReachabilityBase", "RecipesBase", "Reexport", "Requires", "SharedArrays", "SparseArrays"]
+git-tree-sha1 = "24b8470ba3712942e07b1645ee2ddfd102a90b1f"
+uuid = "b4f0291d-fe17-52bc-9479-3d1a343d9043"
+version = "6.0.3"
 
 [[deps.LibCURL]]
 deps = ["LibCURL_jll", "MozillaCACerts_jll"]
@@ -2427,6 +2462,12 @@ weakdeps = ["FixedPointNumbers"]
 
     [deps.Ratios.extensions]
     RatiosFixedPointNumbersExt = "FixedPointNumbers"
+
+[[deps.ReachabilityBase]]
+deps = ["ExprTools", "InteractiveUtils", "LinearAlgebra", "Random", "Requires", "SparseArrays"]
+git-tree-sha1 = "8c4ee9dd72d7ba962d5d4a0974f7e8f98fe275f6"
+uuid = "379f33d0-9447-4353-bd03-d664070e549f"
+version = "0.3.6"
 
 [[deps.ReactantCore]]
 deps = ["ExpressionExplorer", "MacroTools"]

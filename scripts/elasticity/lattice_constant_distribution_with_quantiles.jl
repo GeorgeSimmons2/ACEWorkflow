@@ -9,7 +9,7 @@ n_params   = length(lin_params)
 # POPS = readdlm(joinpath(result.dir, "pops_corrections.csv"), ',', Float64)
 
 
-quantile_corrections = quantile_filter(POPS, 0.05)
+quantile_corrections = pops_corrections
 
 a_eq = ACEWorkflow.relax_lattice_constant(model, :Al)
 
