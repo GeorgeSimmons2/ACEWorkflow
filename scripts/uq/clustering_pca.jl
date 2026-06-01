@@ -51,26 +51,26 @@ function multi_hypercube_rejection(pops_corrections::AbstractMatrix{Float64}, km
 
         mask = eigvals .> maximum(eigvals) * 1e-8
         eigvecs = eigvecs[:, mask]
+        eigvals = eigvals[mask]
 
-        projected = pointwise_corrections' * eigvecs
+        projected = pointwise_corrections' * eigvecs  # (n_data, k)
 
         lower_pca = [quantile(projected[:, j], percentile_clipping / 100) for j in 1:size(projected, 2)]
         upper_pca = [quantile(projected[:, j], 1.0 - percentile_clipping / 100) for j in 1:size(projected, 2)]
 
-        lower_orig = vec(minimum(pointwise_corrections, dims=2))
-        upper_orig = vec(maximum(pointwise_corrections, dims=2))
+        # Mahalanobis distances of the training corrections in PCA space — sets the acceptance threshold
+        mahal_train = vec(sum((projected .^ 2) ./ eigvals', dims=2))
+        mahal_max   = maximum(mahal_train)
 
         perturbations = zeros(Float64, size(pointwise_corrections, 1), number_of_committee_members)
         count = 0
         while count < number_of_committee_members
-            u = rand(Float64, length(lower_pca))
-            δ = eigvecs * (lower_pca .+ (upper_pca .- lower_pca) .* u)
-            if all(lower_orig .<= δ) && all(δ .<= upper_orig)
+            u  = rand(Float64, length(lower_pca))
+            c  = lower_pca .+ (upper_pca .- lower_pca) .* u   # PCA coordinates
+            md = sum(c .^ 2 ./ eigvals)                        # Mahalanobis distance
+            if md <= mahal_max
                 count += 1
-                perturbations[:, count] = δ
-                if (mod(count, 10) == 0)
-                    println("$(count) samples accepted")
-                end
+                perturbations[:, count] = eigvecs * c
             end
         end
 
