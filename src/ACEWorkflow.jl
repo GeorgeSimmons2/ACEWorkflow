@@ -33,6 +33,18 @@ export get_dynamical_matrix_at_q!
 export get_dynamical_matrices_at_qpoints
 export get_q_cart
 export phonon_mode_energy
+export FREQ_THz, THz_to_meV
+export precompute_force_constants
+export dynamical_matrix_from_fc
+export dynamical_matrix_ace
+export eigenvalues_to_freq_THz
+export dq_eigensystem
+export fcc_band_path
+export compute_phonon_bands
+export plot_phonon_bands
+export plot_phonon_energy
+export plot_phonon_comparison
+export phonon_committee
 
 # Re-export Models
 export load_model, build_model, model_name, model_dir
