@@ -1,6 +1,6 @@
 using GeometryOptimization
 import ACEpotentials.Models: potential_energy_basis 
-sys_bulk = bulk(:Al, cubic=true)
+sys_bulk = bulk(:W, cubic=true)
 results  = minimize_energy!(sys_bulk, model; variablecell=true)
 sys_bulk_opt = results.system
 sys_bulk_opt_copy = deepcopy(sys_bulk_opt)
@@ -13,20 +13,20 @@ sys_vac_opt  = results.system
 E_def = potential_energy(sys_vac_opt, model)  - (length(sys_vac_opt) * potential_energy(sys_bulk_opt, model) / length(sys_bulk_opt))
 E_def_design = potential_energy_basis(sys_vac_opt, model) .- (length(sys_vac_opt) .* potential_energy_basis(sys_bulk_opt, model) ./ length(sys_bulk_opt))
 
-vac_Es = []
-pca_samples = (samples_full .+ lin_params)'
-for i=1:size(POPS_corrections, 1)
-    pops_i = POPS_corrections[i,:] .+ lin_params
-    vac_E  = dot(E_def_design, pops_i)
-    push!(vac_Es, vac_E)
-end
+# vac_Es = []
+# pca_samples = (samples_full .+ lin_params)'
+# for i=1:size(POPS_corrections, 1)
+#     pops_i = POPS_corrections[i,:] .+ lin_params
+#     vac_E  = dot(E_def_design, pops_i)
+#     push!(vac_Es, vac_E)
+# end
 
-pca_vac_Es = []
-for i=1:size(pca_samples, 1)
-    pops_i = pca_samples[i,:]
-    vac_E  = dot(E_def_design, pops_i)
-    push!(pca_vac_Es, vac_E)
-end
+# pca_vac_Es = []
+# for i=1:size(pca_samples, 1)
+#     pops_i = pca_samples[i,:]
+#     vac_E  = dot(E_def_design, pops_i)
+#     push!(pca_vac_Es, vac_E)
+# end
 
 
 using CairoMakie

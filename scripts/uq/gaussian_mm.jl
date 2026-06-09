@@ -1,19 +1,29 @@
-using GaussianMixtures
-using DelimitedFiles, Statistics
+using ACEWorkflow, LinearAlgebra, Random, DelimitedFiles, Clustering, Statistics
+using Distributed, JLD
 
-pops_con = readdlm("small_high_entropy_ace_model/constrained_pops.csv", ',')
-# pops_con: n_samples × n_params
+addprocs(Threads.nthreads())
+@everywhere using GaussianMixtures
 
-μ = mean(pops_con, dims=1)        # 1 × n_params
-σ = std(pops_con, dims=1) .+ 1e-8 # 1 × n_params
+Random.seed!(1234)
 
-Xn = Float64.((pops_con .- μ) ./ σ)  # n_samples × n_params — correct orientation for GMM
+n_gaussians = 200
 
-K = 5  # number of mixture components (tune this!)
-gmm = GMM(K, Xn; kind=:diag)
+result = load_model(:Al, 20, 4, 6, 3)
+model  = result.model
+# Ap = Diagonal(result.W) * result.A / result.P
+# Yw = result.W .* result.Y
+# pops_corrections = corrections(Ap, Yw, result.P; leverage_percentile=0.0)
+pops_corrections = readdlm("$(result.dir)/pops_corrections.csv", ',')
+pops_corrections = Matrix(pops_corrections) * result.P
 
-# Variance flooring can cause weights to drift off-sum-to-1; renormalise before sampling
-gmm.w ./= sum(gmm.w)
+g = GMM(n_gaussians, pops_corrections, kind=:full, nIter=100)
+p = GMMprior(g.d, 0.1, 1.0)
+v = VGMM(g, p)
+em!(v, pops_corrections)
+g_fitted = GMM(v)
 
-# rand(gmm, n) returns n × n_params; de-normalise to original scale
-samples = rand(gmm, 100) .* σ .+ μ  # 10 × n_params
+save("my_gmm.jld", "g_fitted", g_fitted)
+
+gmm_pops = rand(g_fitted, 50)
+gmm_pops = [(result.P \ vec(gmm_pops[i,:])) .+ result.lin_params for i=1:size(gmm_pops, 1)]
+writedlm("$(result.dir)/$(n_gaussians)_gmm_pops_samples.csv", gmm_pops, ',')

@@ -264,7 +264,76 @@ function fcc_band_path(L; N_per_seg=30)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Branch tracking
+#  BCC Brillouin-zone path
+#
+#  Path: Γ → H → N → Γ → P → H
+#
+#  High-symmetry points in fractional coordinates of the PRIMITIVE BCC
+#  reciprocal lattice vectors (b_i = columns of B = 2π L^{-T}):
+#    Γ  = ( 0,    0,    0  )
+#    H  = ( 1/2,  1/2, -1/2)  zone-face centre  → Cartesian (2π/a)(0,0,1)
+#    N  = ( 0,    0,    1/2)  zone-edge midpoint → Cartesian (2π/a)(1/2,1/2,0)
+#    P  = ( 1/4,  1/4,  1/4)  zone corner       → Cartesian (π/a)(1,1,1)
+# ─────────────────────────────────────────────────────────────────────────────
+"""
+    bcc_band_path(L; N_per_seg=30)
+
+Return `(q_list, x_coords, x_ticks, tick_labels, seg_starts)` for the BCC path
+Γ → H → N → Γ → P → H.
+`L` is the 3×3 primitive lattice matrix (columns = lattice vectors, in Å);
+`N_per_seg` gives the number of q-points per segment.
+`seg_starts[iq]` is true only for the first q-point (used by branch tracking).
+"""
+function bcc_band_path(L; N_per_seg=30)
+    B = 2π * inv(transpose(L))   # reciprocal lattice vectors as columns
+
+    frac = (
+        Γ  = [0.0,   0.0,   0.0],
+        H  = [0.5,   0.5,  -0.5],
+        N  = [0.0,   0.0,   0.5],
+        P  = [0.25,  0.25,  0.25],
+    )
+
+    pts = (
+        Γ = B * frac.Γ,
+        H = B * frac.H,
+        N = B * frac.N,
+        P = B * frac.P,
+    )
+
+    segs   = [(:Γ, :H), (:H, :N), (:N, :Γ), (:Γ, :P), (:P, :H)]
+    labels = ["Γ", "H", "N", "Γ", "P", "H"]
+
+    q_list     = Vector{Float64}[]
+    x_vals     = Float64[]
+    seg_starts = Bool[]
+    x_ticks    = Float64[0.0]
+    x = 0.0
+
+    for (s, (l1, l2)) in enumerate(segs)
+        q1 = getfield(pts, l1)
+        q2 = getfield(pts, l2)
+
+        seg_len = norm(q2 - q1)
+        is_last = (s == length(segs))
+
+        ts = is_last ? range(0.0, 1.0, N_per_seg + 1) :
+                       range(0.0, 1.0, N_per_seg + 1)[1:end-1]
+
+        for (ti, t) in enumerate(ts)
+            q = q1 .+ t .* (q2 .- q1)
+            push!(q_list, q)
+            push!(x_vals, x + t * seg_len)
+            push!(seg_starts, s == 1 && ti == 1)
+        end
+
+        x += seg_len
+        push!(x_ticks, x)
+    end
+
+    return q_list, x_vals, x_ticks, labels, seg_starts
+end
+
 #
 #  Eigenvalues sorted by magnitude can jump between physically distinct branches
 #  whenever two bands are nearly degenerate (e.g. the two TA branches along
@@ -304,19 +373,35 @@ end
 #  Band-structure sweep
 # ─────────────────────────────────────────────────────────────────────────────
 """
-    compute_phonon_bands(sys_prim, sys_super, model; N_per_seg=30, n_modes=nothing)
+    compute_phonon_bands(sys_prim, sys_super, model;
+                         N_per_seg=30, n_modes=nothing, structure=:fcc)
 
-Compute phonon frequencies along the standard FCC path Γ→X→U→L→Γ→K.
+Compute phonon frequencies along a standard high-symmetry path.
+
+`structure` selects the Brillouin-zone path:
+  - `:fcc` (default) — Γ→X→U→L→Γ→K  (FCC primitive cell)
+  - `:bcc`           — Γ→H→N→Γ→P→H  (BCC primitive cell, e.g. W)
+
 Eigenvalues are tracked across q-points to produce smooth, non-crossing bands.
 
 Returns `(x_vals, freqs, x_ticks, labels)` where
 `freqs` is a `Nmodes × Nq` matrix of frequencies in THz.
 """
-function compute_phonon_bands(sys_prim, sys_super, model; N_per_seg=30, n_modes=nothing)
+function compute_phonon_bands(sys_prim, sys_super, model;
+                              N_per_seg=30, n_modes=nothing,
+                              structure::Symbol=:fcc)
     print("  Precomputing force constants (Hessian of supercell) …")
     fc_data = precompute_force_constants(sys_prim, sys_super, model)
     println(" done.")
-    q_list, x_vals, x_ticks, labels, seg_starts = fcc_band_path(fc_data.L; N_per_seg)
+    if structure == :fcc
+        q_list, x_vals, x_ticks, labels, seg_starts = fcc_band_path(fc_data.L; N_per_seg)
+        path_str = "Γ→X→U→L→Γ→K"
+    elseif structure == :bcc
+        q_list, x_vals, x_ticks, labels, seg_starts = bcc_band_path(fc_data.L; N_per_seg)
+        path_str = "Γ→H→N→Γ→P→H"
+    else
+        throw(ArgumentError("Unknown structure `$structure`. Use :fcc or :bcc."))
+    end
     Np     = length(sys_prim)
     Ntotal = 3 * Np
     Nout   = isnothing(n_modes) ? Ntotal : n_modes
@@ -328,7 +413,7 @@ function compute_phonon_bands(sys_prim, sys_super, model; N_per_seg=30, n_modes=
     println("  Primitive cell : $Np atoms  →  $Ntotal branches")
     println("  Supercell      : $(length(sys_super)) atoms (for force constants)")
     println("  Modes          : $mode_str")
-    println("  q-path : Γ→X→U→L→Γ→K  ($Nq q-points, $N_per_seg per segment)")
+    println("  q-path : $path_str  ($Nq q-points, $N_per_seg per segment)")
 
     for (iq, q) in enumerate(q_list)
         iq % 10 == 0 && print("\r  Computing q-point $iq / $Nq …")

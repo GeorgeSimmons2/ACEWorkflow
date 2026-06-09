@@ -1,18 +1,26 @@
 module Models
 
-using ACEpotentials, ACEfit, DelimitedFiles, LinearAlgebra, ExtXYZ, SparseArrays, AtomsCalculators
+using ACEpotentials, DelimitedFiles, LinearAlgebra, ExtXYZ, SparseArrays, AtomsCalculators, Distributed, ACEfit
+
 
 # ── Path helpers ──────────────────────────────────────────────────────────────
 
 """
-    model_name(element, totaldegree, smoothness, rcut, order) -> String
+    model_name(elements, totaldegree, smoothness, rcut, order) -> String
 
-Return the canonical model name string, e.g. `"Al_20_5_6A_3"`.
+Return the canonical model name string.  Elements are sorted and concatenated
+so the name is independent of input order, e.g. `[:Al, :Ti]` → `"AlTi_20_5_6A_3"`.
+Single-element example: `[:Al]` → `"Al_20_5_6A_3"`.
 """
-function model_name(element::Symbol, totaldegree::Int, smoothness::Int,
+function model_name(elements::AbstractVector{Symbol}, totaldegree::Int, smoothness::Int,
                     rcut::Real, order::Int)
-    return "$(element)_$(totaldegree)_$(smoothness)_$(Int(rcut))A_$(order)"
+    elem_str = join(sort(String.(elements)))
+    return "$(elem_str)_$(totaldegree)_$(smoothness)_$(Int(rcut))A_$(order)"
 end
+
+# Single-element convenience (backward compat)
+model_name(element::Symbol, totaldegree::Int, smoothness::Int, rcut::Real, order::Int) =
+    model_name([element], totaldegree, smoothness, rcut, order)
 
 """
     model_dir(name) -> String
@@ -24,6 +32,11 @@ function model_dir(name::AbstractString)
     return abspath(root)
 end
 
+model_dir(elements::AbstractVector{Symbol}, totaldegree::Int, smoothness::Int,
+          rcut::Real, order::Int) =
+    model_dir(model_name(elements, totaldegree, smoothness, rcut, order))
+
+# Single-element convenience (backward compat)
 model_dir(element::Symbol, totaldegree::Int, smoothness::Int, rcut::Real, order::Int) =
     model_dir(model_name(element, totaldegree, smoothness, rcut, order))
 
@@ -31,9 +44,12 @@ model_dir(element::Symbol, totaldegree::Int, smoothness::Int, rcut::Real, order:
 # ── load_model ────────────────────────────────────────────────────────────────
 
 """
-    load_model(element, totaldegree, smoothness, rcut, order; training_xyz=nothing)
+    load_model(elements, totaldegree, smoothness, rcut, order; training_xyz=nothing)
 
 Load an ACE model and its associated data from `models/<name>/`.
+
+`elements` may be a `Vector{Symbol}` (multispecies) or a single `Symbol`
+(single-species convenience).
 
 If the model does not exist yet, `build_model` is called automatically.
 `training_xyz` is only required when building a new model; if omitted and the
@@ -45,9 +61,9 @@ Returns a `NamedTuple` with fields:
   - `lin_params`       – fitted linear parameters (Vector)
   - `pops_corrections` – POPS pointwise corrections matrix (may be `nothing`)
 """
-function load_model(element::Symbol, totaldegree::Int, smoothness::Int,
+function load_model(elements::AbstractVector{Symbol}, totaldegree::Int, smoothness::Int,
                     rcut::Real, order::Int; training_xyz::Union{String,Nothing}=nothing)
-    name = model_name(element, totaldegree, smoothness, rcut, order)
+    name = model_name(elements, totaldegree, smoothness, rcut, order)
     dir  = model_dir(name)
     json = joinpath(dir, "$(name).json")
 
@@ -59,7 +75,7 @@ function load_model(element::Symbol, totaldegree::Int, smoothness::Int,
             ))
         end
         @info "Model $name not found — building from scratch..."
-        return build_model(element, totaldegree, smoothness, rcut, order;
+        return build_model(elements, totaldegree, smoothness, rcut, order;
                            training_xyz=training_xyz)
     end
 
@@ -78,15 +94,23 @@ function load_model(element::Symbol, totaldegree::Int, smoothness::Int,
             name=name, dir=dir)
 end
 
+# Single-element convenience (backward compat)
+load_model(element::Symbol, totaldegree::Int, smoothness::Int,
+           rcut::Real, order::Int; kw...) =
+    load_model([element], totaldegree, smoothness, rcut, order; kw...)
+
 
 # ── build_model ───────────────────────────────────────────────────────────────
 
 """
-    build_model(element, totaldegree, smoothness, rcut, order; training_xyz,
+    build_model(elements, totaldegree, smoothness, rcut, order; training_xyz,
                 energy_key=:dft_energy, force_key=:dft_forces, virial_key=:dft_virials,
                 stride=1)
 
 Build an ACE model, fit it with POPS, and save everything to `models/<name>/`.
+
+`elements` may be a `Vector{Symbol}` (multispecies) or a single `Symbol`
+(single-species convenience).
 
 Saves:
   - `<name>.json`          – serialised ACE model
@@ -96,15 +120,16 @@ Saves:
 
 Returns the same `NamedTuple` as `load_model`.
 """
-function build_model(element::Symbol, totaldegree::Int, smoothness::Int,
+function build_model(elements::AbstractVector{Symbol}, totaldegree::Int, smoothness::Int,
                      rcut::Real, order::Int;
                      training_xyz::String,
                      energy_key::Symbol = :dft_energy,
                      force_key::Symbol  = :dft_forces,
                      virial_key::Symbol = :dft_virials,
-                     stride::Int        = 1)
+                     stride::Int        = 1,
+                     ace_model_kwargs...)
 
-    name = model_name(element, totaldegree, smoothness, rcut, order)
+    name = model_name(elements, totaldegree, smoothness, rcut, order)
     dir  = model_dir(name)
     mkpath(joinpath(dir, "results"))
 
@@ -117,9 +142,8 @@ function build_model(element::Symbol, totaldegree::Int, smoothness::Int,
     stride > 1 && (training_configs = training_configs[1:stride:end])
 
     # ── Build ACE model ───────────────────────────────────────────────────────
-    # use ace_model
-    model = ace1_model(elements=[element], totaldegree=totaldegree,
-                       order=order, rcut=rcut)
+    model = ace1_model(elements=elements, totaldegree=totaldegree,
+                       order=order, rcut=rcut; ace_model_kwargs...)
 
     data = ACEpotentials.make_atoms_data(training_configs, model;
                 energy_key = energy_key,
@@ -159,6 +183,12 @@ function build_model(element::Symbol, totaldegree::Int, smoothness::Int,
             lin_params=lin_params, #pops_corrections=pops_corrections,
             name=name, dir=dir)
 end
+
+# Single-element convenience (backward compat)
+build_model(element::Symbol, totaldegree::Int, smoothness::Int,
+            rcut::Real, order::Int; kw...) =
+    build_model([element], totaldegree, smoothness, rcut, order; kw...)
+
 
 export model_name, model_dir, load_model, build_model
 
