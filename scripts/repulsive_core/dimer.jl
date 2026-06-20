@@ -18,6 +18,18 @@ function dimer_curve(element::Symbol, distances::AbstractVector{Float64}, model)
     return energies
 end
 
+function dimer_curve_basis(element::Symbol, distances::AbstractVector{Float64}, model)
+    
+    energies = []
+
+    for (i, distance) in enumerate(distances)
+        ats = AtomsBuilder._flexible_system([[0.0, 0.0, 0.0], [distance, 0.0, 0.0]] .* u"Å", [element, element], (1.01 * maximum(distances)) .* [1. 0. 0.; 0. 1. 0.; 0. 0. 1.] .*u"Å", (false, false, false))
+        push!(energies, ACEpotentials.Models.potential_energy_basis(ats, model))
+    end
+
+    return energies
+end
+
 dimer_energies = dimer_curve(element, distances, model)
 
 fig = Figure()

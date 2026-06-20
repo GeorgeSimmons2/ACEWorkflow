@@ -1,33 +1,47 @@
 using ACEWorkflow, ACEpotentials, AtomsBuilder, Unitful, CairoMakie, ExtXYZ
 using AtomsCalculators: potential_energy
-using Molly, ACEWorkflow, Statistics, LinearAlgebra
+using Molly, ACEWorkflow, Statistics, LinearAlgebra, DelimitedFiles
 
-element = :Al
-result = load_model(element, 12, 4, 6, 3)
-model = result.model
-
+element = :W
+# result = load_model(element, 12, 4, 6, 3)
+# model = result.model
+model, _ = ACEpotentials.load_model("/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/models/W_20_4_5A_3/W_20_4_5A_3.json")
+result   = (; dir="/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/models/W_20_4_5A_3")
+if (constrained==true)
+    ACEpotentials.Models.set_linear_parameters!(model, vec(readdlm("/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/models/W_20_4_5A_3/repulsive_constrained_params.csv",',')))
+    constrained_or_not = "con"
+else
+    constrained_or_not = "unc"
+end
 a_eq = ACEWorkflow.relax_lattice_constant(model, element)
 
 # NVT note: volume is fixed at the 0 K equilibrium.  At 1200 K the lattice
 # expands ~1-2%, so the simulation runs slightly over-compressed.  This is
 # fine for a stability/convergence check; for thermodynamic properties run
 # NPT first to equilibrate the volume at temperature.
-sys = rattle!(bulk(element, a=a_eq*u"Å", cubic=true) * (3,3,3), 0.03)
+sys = bulk(element, a=a_eq*u"Å", cubic=true) * (5,5,5)
 sys_md = Molly.System(sys; force_units=u"eV/Å", energy_units=u"eV")
-temp = 300.0 * u"K"
-n_steps   = 1_000
-log_every = 100
-
+temp = 2200.0 * u"K"
+dt =  0.5u"fs"
+friction = 0.002*u"fs^-1"
+n_steps   = 50_000
+log_every = 50
+dir_name  = "$(result.dir)/results/NPT_$(n_steps)_steps_$(ustrip(dt))_fs_dt_$(ustrip.(temp))_K_$(ustrip(friction))_per_fs_friction_$(constrained_or_not)"
+mkpath(dir_name)
 sys_md = Molly.System(sys_md;
                       general_inters = (model,),
                       velocities = Molly.random_velocities(sys_md, temp),
                       loggers=(temp   = Molly.TemperatureLogger(log_every),
                                coords = Molly.CoordinatesLogger(log_every),
+                               volume = Molly.VolumeLogger(log_every),
+                               writer = Molly.TrajectoryWriter(20*log_every, "$(dir_name)/traj_log.xyz"; write_boundary=false),
                                energy = Molly.PotentialEnergyLogger(typeof(1.0u"eV"), log_every),))
 
-simulator = Molly.VelocityVerlet(
-   dt = 1.0u"fs",
-   coupling = Molly.AndersenThermostat(temp, 3.0u"fs"),)
+simulator = Molly.Langevin(
+   dt = dt,
+   temperature=temp,
+   friction=friction,
+   coupling=Molly.MonteCarloBarostat(sim_pressure, temp, sys_md.boundary),)
 
 Molly.simulate!(sys_md, simulator, n_steps)
 
@@ -37,11 +51,12 @@ Molly.simulate!(sys_md, simulator, n_steps)
 # ── Save trajectory ───────────────────────────────────────────────────────────
 # Write one ExtXYZ frame per logged step, including temperature and energy.
 let
-    traj_path = "$(result.dir)/results/md_trajectory.extxyz"
+    traj_path = "$(dir_name)/md_trajectory.extxyz"
     energies  = sys_md.loggers.energy.history
     temps     = sys_md.loggers.temp.history
     species   = [string(Molly.atomic_symbol(sys_md, i)) for i in 1:length(sys_md)]
     n_atoms   = length(sys_md)
+    volumes   = sys_md.loggers.volume.history
     box       = sys_md.boundary.side_lengths
 
     frames = Dict{String,Any}[]
@@ -50,9 +65,9 @@ let
         frame_dict = Dict{String,Any}(
             "N_atoms"  => n_atoms,
             "info"     => Dict{String,Any}(
-                "Lattice"     => string(ustrip(u"Å", box[1])) * " 0.0 0.0 0.0 " *
-                                 string(ustrip(u"Å", box[2])) * " 0.0 0.0 0.0 " *
-                                 string(ustrip(u"Å", box[3])),
+                "Lattice"     => string(ustrip(u"Å", cbrt(volumes[f]))) * " 0.0 0.0 0.0 " *
+                                 string(ustrip(u"Å", cbrt(volumes[f]))) * " 0.0 0.0 0.0 " *
+                                 string(ustrip(u"Å", cbrt(volumes[f]))),
                 "Properties"  => "species:S:1:pos:R:3",
                 "energy"      => ustrip(energies[f]),
                 "temperature" => ustrip(temps[f]),
@@ -68,7 +83,6 @@ let
     ExtXYZ.write_frames(traj_path, frames)
     @info "Trajectory saved to $traj_path ($(length(frames)) frames)"
 end
-
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
 coords_history = sys_md.loggers.coords.history   # Vector of Vector of coords
@@ -112,7 +126,7 @@ ax_rdf  = Axis(fig_rdf[1,1];
 lines!(ax_rdf, r_mids, rdf; color=:steelblue)
 vlines!(ax_rdf, [2.0]; color=(:red, 0.6), linestyle=:dash, linewidth=1.2)
 text!(ax_rdf, 2.05, maximum(rdf)*0.9; text="overlap\nwarning", fontsize=11, color=:red)
-save("$(result.dir)/results/md_rdf.png", fig_rdf)
+save("$(dir_name)/md_rdf.png", fig_rdf)
 
 # ── MSD ───────────────────────────────────────────────────────────────────────
 # Mean squared displacement relative to frame 0.
@@ -140,20 +154,23 @@ ax_msd  = Axis(fig_msd[1,1];
                title  = "Mean Squared Displacement — Al at 1200 K (NVT)",
                xlabel = "Time (fs)", ylabel = "MSD (Å²)")
 lines!(ax_msd, t_axis, msd; color=:tomato)
-save("$(result.dir)/results/md_msd.png", fig_msd)
+save("$(dir_name)/md_msd.png", fig_msd)
 
 # ── Temperature & energy convergence ─────────────────────────────────────────
 t_temps = (0:length(sys_md.loggers.temp.history)-1) .* (log_every * 1.0)
 temps_K = ustrip.(sys_md.loggers.temp.history)
 energies_eV = ustrip.(sys_md.loggers.energy.history)
+volumes = ustrip.(sys_md.loggers.volume.history)
 
 fig_conv = Figure(size=(700, 600))
 ax_T = Axis(fig_conv[1,1]; title="Temperature", xlabel="Time (fs)", ylabel="T (K)")
 ax_E = Axis(fig_conv[2,1]; title="Potential Energy", xlabel="Time (fs)", ylabel="E (eV)")
+ax_V = Axis(fig_conv[3,1]; title="Volume", xlabel="Time (fs)", ylabel="V (nm^3)")
 lines!(ax_T, t_temps, temps_K;    color=:steelblue)
 hlines!(ax_T, [ustrip(temp)];     color=:black, linestyle=:dash, linewidth=0.8)
 lines!(ax_E, t_temps, energies_eV; color=:tomato)
-save("$(result.dir)/results/md_convergence.png", fig_conv)
+lines!(ax_V, t_temps, volumes; color=:green)
+save("$(dir_name)/md_convergence.png", fig_conv)
 
 # ── Cluster analysis ──────────────────────────────────────────────────────────
 # Three complementary diagnostics:
@@ -250,7 +267,7 @@ hlines!(ax3, [2.0]; color=:black, linestyle=:dash, linewidth=0.8,
         label="isolated pair")
 axislegend(ax3)
 
-save("$(result.dir)/results/md_cluster_analysis.png", fig_cl)
+save("$(dir_name)/md_cluster_analysis.png", fig_cl)
 
 # Print summary
 @info "Cluster analysis summary:"

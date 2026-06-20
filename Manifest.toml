@@ -2,7 +2,7 @@
 
 julia_version = "1.11.8"
 manifest_format = "2.0"
-project_hash = "b5b403bcd445388158ddd61770ee485138fa792d"
+project_hash = "1a28223122a94628a82ea0f03ebb886fa567e588"
 
 [[deps.ACEbase]]
 deps = ["JSON", "LinearAlgebra", "Printf", "Reexport", "SparseArrays", "StaticArrays", "Test", "YAML", "ZipArchives"]
