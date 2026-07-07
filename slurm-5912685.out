@@ -1,0 +1,2 @@
+WARNING: using Molly.potential_energy in module Main conflicts with an existing identifier.
+slurmstepd: error: *** JOB 5912685 ON taskfarm178 CANCELLED AT 2026-06-30T14:46:12 ***

@@ -1,0 +1,31 @@
+WARNING: using Molly.potential_energy in module Main conflicts with an existing identifier.
+┌ Warning: Molly CubicBoundary assumes origin at (0, 0, 0)
+└ @ Molly ~/.julia/packages/Molly/Otudu/src/types.jl:1236
+┌ Info: Temperature history:
+│   sys_md.loggers.temp.history =
+│    2001-element Vector{Quantity{Float64, 𝚯, Unitful.FreeUnits{(K,), 𝚯, nothing}}}:
+│     514.5830875871824 K
+│     262.50259674640097 K
+│     277.31218831240545 K
+│     278.49290445746817 K
+│       ⋮
+│     503.1561945984824 K
+│     451.02142488844817 K
+└     494.08335134630767 K
+┌ Info: Energy history:
+│   sys_md.loggers.energy.history =
+│    2001-element Vector{Quantity{Float64, 𝐋^2 𝐌 𝐓^-2, Unitful.FreeUnits{(eV,), 𝐋^2 𝐌 𝐓^-2, nothing}}}:
+│     -397.18891354678925 eV
+│     -393.2824892475045 eV
+│     -393.40149010227105 eV
+│     -392.81184302051724 eV
+│        ⋮
+│     -391.49513612064595 eV
+│     -391.03303335604295 eV
+└     -391.6619114786846 eV
+[ Info: Trajectory saved to /storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/models/Al_12_4_6A_2_subset_10_percent/results/100000.0_fs_NVT/md_trajectory.extxyz (2001 frames)
+[ Info: Cluster analysis summary:
+[ Info:   Min pair distance (all frames): 2.3098553651360745 Å
+[ Info:   Max coordination number seen:   13
+[ Info:   Max cluster size seen:          1 atoms
+[ Info: No atoms closer than 2.2 Å — no clustering detected.

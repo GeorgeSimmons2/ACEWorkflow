@@ -21,12 +21,12 @@ a_eq = ACEWorkflow.relax_lattice_constant(model, element)
 # NPT first to equilibrate the volume at temperature.
 sys = bulk(element, a=a_eq*u"Å", cubic=true) * (5,5,5)
 sys_md = Molly.System(sys; force_units=u"eV/Å", energy_units=u"eV")
-temp = 2200.0 * u"K"
+temp = 3600.0 * u"K"
 dt =  0.5u"fs"
 friction = 0.002*u"fs^-1"
 n_steps   = 50_000
 log_every = 50
-dir_name  = "$(result.dir)/results/NPT_$(n_steps)_steps_$(ustrip(dt))_fs_dt_$(ustrip.(temp))_K_$(ustrip(friction))_per_fs_friction_$(constrained_or_not)"
+dir_name  = "$(result.dir)/results/NPT_$(n_steps)_steps_$(ustrip(dt))_fs_dt_$(ustrip.(temp))_K_$(ustrip(friction))_per_fs_friction_$(constrained_or_not)_$(ustrip(sim_pressure))_GPa"
 mkpath(dir_name)
 sys_md = Molly.System(sys_md;
                       general_inters = (model,),

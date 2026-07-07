@@ -3,11 +3,11 @@ import AtomsCalculators: forces, potential_energy
 Random.seed!(1234)
 
 # ── Load model ────────────────────────────────────────────────────────────────
-# result = load_model(:Al, 20, 4, 6, 3)
-# model  = result.model
+result = load_model(:Al, 16, 4, 6, 2)
+model  = result.model
 
-testing_configs = ExtXYZ.load("/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/data/W/df_W_test.extxyz")
-testing_configs = testing_configs#[1:20:end]
+testing_configs = ExtXYZ.load("/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/data/Al/manual_df_test_Al.xyz")
+testing_configs = testing_configs[1:10:end]
 
 predicted_test_energies = []
 test_energies           = []
@@ -18,10 +18,10 @@ for config in testing_configs
     E = potential_energy(config, model)
     n = length(config)
     append!(predicted_test_energies, ustrip(E) / n)
-    append!(test_energies, ustrip(config[:energy]) / n)
+    append!(test_energies, ustrip(config[:dft_energy]) / n)
 
-    if haskey(config[1], :forces)
-        config_forces = [at[:forces] for at in config]
+    if haskey(config[1], :dft_forces)
+        config_forces = [at[:dft_forces] for at in config]
         F = forces(config, model)
         append!(test_forces, reduce(vcat, ustrip.(config_forces)))
         append!(predicted_test_forces, reduce(vcat, ustrip.(F)))

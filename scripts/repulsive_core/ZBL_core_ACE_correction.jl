@@ -1,6 +1,9 @@
 using ACEpotentials, EmpiricalPotentials, ACEWorkflow, OSQP, SparseArrays
 using ACEpotentials.Models: potential_energy_basis
-
+using AtomsBase
+using StaticArrays
+using StatsBase
+using Unitful, ExtXYZ
 element = :W
 totdeg  = 20
 prior_param = 4
@@ -9,7 +12,7 @@ v = 3
 result = load_model(element, totdeg, prior_param, rcut, v)
 model = result.model
 W_zbl = ZBL(5.0*u"Å") # Tungsten ZBL potential
-lattice_constants = LinRange(0.2, 2.18, 50)
+lattice_constants = LinRange(0.21, 2.18, 50)
 
 function bulk_energy_basis(element::Symbol, lattice_constants::AbstractVector{Float64}, model)
 
@@ -37,6 +40,9 @@ function bulk_energy_curve(element::Symbol, lattice_constants::AbstractVector{Fl
 
     return energies
 end
+
+using AtomsBuilder, LinearAlgebra
+import AtomsCalculators: potential_energy
 
 bulk_bases    = bulk_energy_basis(:W, lattice_constants, model)
 bulk_energies = [dot(bulk_basis, result.lin_params) for bulk_basis in bulk_bases]
@@ -68,7 +74,8 @@ P = Gamma
 # unconstrained_pointwise_corrections = (P \ (A' .* (unconstrained_errors ./ leverage))' .+ result.lin_params)'
 
 
-ace_positive_core_constrained_parameters = constrained_ridge_regression(Ap, Yw, Gamma, constraint_matrix, bounds)
+# ace_positive_core_constrained_parameters = constrained_ridge_regression(Ap, Yw, Gamma, constraint_matrix, bounds)
+ace_positive_core_constrained_parameters = vec(readdlm("$(result.dir)/positive_core_constrained_parameters.csv", ','))
 ace_positive_core_model = deepcopy(model)
 unc_model = deepcopy(model)
 ACEpotentials.Models.set_linear_parameters!(ace_positive_core_model, ace_positive_core_constrained_parameters)
@@ -82,25 +89,220 @@ zbl_energies  = bulk_energy_curve(:W, full_lattice_constants, W_zbl)
 constrained_bulk_energies_add_zbl = constrained_bulk_energies .+ zbl_energies
 unconstrained_bulk_energies_add_zbl = unconstrained_bulk_energies .+ zbl_energies
 
+using LinearAlgebra, DelimitedFiles
+using Unitful, ExtXYZ
+
+atoms = ExtXYZ.load("data/W/df_W_train.extxyz")
+
+using LinearAlgebra
+using Unitful
+
+function pair_distances(sys)
+
+    N    = length(sys)
+    dists = Float64[]
+
+    # 3x3 matrix of lattice vectors (columns), per-config since each
+    # training structure has its own (generally triclinic) cell
+    L    = ustrip.(reduce(hcat, sys[:cell_vectors]))
+    Linv = inv(L)
+
+    for i in 1:N-1
+        ri = ustrip.(position(sys, i))
+
+        for j in i+1:N
+            rj = ustrip.(position(sys, j))
+
+            dr = ri .- rj
+
+            # general (triclinic-safe) minimum image via fractional coordinates
+            frac = Linv * dr
+            frac = frac .- round.(frac)
+            dr   = L * frac
+
+            push!(dists, norm(dr))
+        end
+    end
+
+    return dists
+end
+
+all_dists = reduce(vcat, [pair_distances(at) for at in atoms])
+
+using Test
+using LinearAlgebra
+
+# -----------------------------
+# simple fake system generator
+# -----------------------------
+struct FakeAtom
+    position::Vector{Float64}
+end
+
+FakeSys = Vector{FakeAtom}
+
+# -----------------------------
+# reference naive distances
+# -----------------------------
+function naive_distances(sys)
+    N = length(sys)
+    d = Float64[]
+
+    for i in 1:N-1
+        for j in i+1:N
+            push!(d, norm(sys[i].position .- sys[j].position))
+        end
+    end
+
+    return d
+end
+
+# -----------------------------
+# periodic minimum image (reference implementation)
+# -----------------------------
+function minimum_image_ref(r, L)
+    return r .- L .* round.(r ./ L)
+end
+
+function periodic_distances_ref(sys, Lx, Ly, Lz)
+    N = length(sys)
+    d = Float64[]
+
+    for i in 1:N-1
+        for j in i+1:N
+            dr = sys[i].position .- sys[j].position
+            dr = minimum_image_ref(dr, [Lx, Ly, Lz])
+            push!(d, norm(dr))
+        end
+    end
+
+    return d
+end
+
+# -----------------------------
+# test system
+# -----------------------------
+sys = FakeSys([
+    FakeAtom([0.0, 0.0, 0.0]),
+    FakeAtom([0.9, 0.0, 0.0]),
+    FakeAtom([1.8, 0.0, 0.0])
+])
+
+Lx = 2.0
+Ly = 2.0
+Lz = 2.0
+
+# -----------------------------
+# TESTS
+# -----------------------------
+@testset "pair distances with PBC" begin
+
+    d = periodic_distances_ref(sys, Lx, Ly, Lz)
+
+    # 3 atoms → 3 pair distances
+    @test length(d) == 3
+
+    # symmetry check (order-independent)
+    @test sort(d) ≈ sort(d)
+
+    # known minimum-image result:
+    # distances along x:
+    # 0->0.9 = 0.9
+    # 0->1.8 = min(1.8, 0.2) = 0.2  (wrap!)
+    # 0.9->1.8 = 0.9
+    expected = sort([0.9, 0.2, 0.9])
+
+    @test sort(d) ≈ expected atol=1e-12
+
+end
+
 e_lo, e_hi = -14.0, 30.0   # eV — adjust to taste
+using CairoMakie
+using StatsBase
+using CairoMakie
 
-fig = Figure(size=(800, 500))
-ax  = Axis(fig[1,1];
-           title   = "Bulk energy vs lattice constant — repulsive core",
-           xlabel  = "Lattice constant (Å)",
-           ylabel  = "Energy per cell (eV)")
+fig = Figure(
+    size = (900, 1000),   # taller for stacked panels
+    fontsize = 18         # base font size for everything
+)
 
-lines!(ax, full_lattice_constants, constrained_bulk_energies_add_zbl;
-       color=:steelblue, linewidth=2, label="ACE with constrained core (E => 0) + ZBL")
-lines!(ax, full_lattice_constants, unconstrained_bulk_energies_add_zbl;
-       color=:orange, linewidth=2, linestyle=:dash, label="ACE with unconstrained core + ZBL")
-lines!(ax, full_lattice_constants, zbl_energies;
-       color=:red, linewidth=1.5, linestyle=:dot, label="ZBL")
+# -----------------------------
+# TOP: EOS curves
+# -----------------------------
+ax1 = Axis(fig[1, 1];
+    title  = "Bulk energy vs lattice constant — repulsive core",
+    xlabel = "Lattice constant (Å)",
+    ylabel = "Energy per cell (eV)",
+    titlesize = 22,
+    xlabelsize = 20,
+    ylabelsize = 20,
+    xticklabelsize = 16,
+    yticklabelsize = 16
+)
 
-hlines!(ax, [0.0]; color=(:black, 0.3), linewidth=0.8, linestyle=:dash)
-vlines!(ax, [lattice_constants[end]]; color=(:black, 0.3), linewidth=0.8,
-        linestyle=:dash, label="constraint boundary")
+lines!(ax1, full_lattice_constants, constrained_bulk_energies;
+    color=:steelblue, linewidth=3,
+    label="ACE constrained"
+)
 
-ylims!(ax, e_lo, e_hi)
-axislegend(ax; position=:rt)
-save("$(result.dir)/results/constrain_ace_correction_core_repulsion.png", fig)
+lines!(ax1, full_lattice_constants, unconstrained_bulk_energies_add_zbl;
+    color=:orange, linewidth=3, linestyle=:dash,
+    label="ACE unconstrained + ZBL"
+)
+
+lines!(ax1, full_lattice_constants, zbl_energies;
+    color=:red, linewidth=2, linestyle=:dot,
+    label="ZBL"
+)
+
+hlines!(ax1, [0.0]; color=(:black, 0.4), linewidth=1, linestyle=:dash)
+
+vlines!(ax1, [lattice_constants[end]];
+    color=(:black, 0.4), linewidth=1,
+    linestyle=:dash
+)
+
+axislegend(ax1;
+    position = :rt,
+    fontsize = 16,
+    framevisible = false
+)
+
+ylims!(ax1, e_lo, e_hi)
+
+
+# -----------------------------
+# BOTTOM: histogram
+# -----------------------------
+ax2 = Axis(fig[2, 1];
+    xlabel = "Pair distance (Å)",
+    ylabel = "Frequency",
+    title  = "Pair distance distribution (all configs)",
+    titlesize = 22,
+    xlabelsize = 20,
+    ylabelsize = 20,
+    xticklabelsize = 16,
+    yticklabelsize = 16
+)
+
+all_pairs = vcat(all_dists...)
+
+edges = 0:0.05:maximum(full_lattice_constants)
+h = fit(Histogram, all_pairs, edges)
+
+centers = 0.5 .* (h.edges[1][1:end-1] .+ h.edges[1][2:end])
+
+barplot!(ax2, centers, h.weights;
+    color = (:gray, 0.7)
+)
+
+linkxaxes!(ax1, ax2)
+
+# spacing between panels (IMPORTANT for papers)
+rowgap!(fig.layout, 20)
+
+# -----------------------------
+# SAVE (IMPORTANT: use vector format for papers)
+# -----------------------------
+save("$(result.dir)/results/eos_with_pair_hist.pdf", fig)
+save("$(result.dir)/results/eos_with_pair_hist.png", fig; px_per_unit = 2)

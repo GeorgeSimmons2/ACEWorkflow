@@ -62,9 +62,14 @@ Returns a `NamedTuple` with fields:
   - `pops_corrections` – POPS pointwise corrections matrix (may be `nothing`)
 """
 function load_model(elements::AbstractVector{Symbol}, totaldegree::Int, smoothness::Int,
-                    rcut::Real, order::Int; training_xyz::Union{String,Nothing}=nothing)
+                    rcut::Real, order::Int; training_xyz::Union{String,Nothing}=nothing,
+                    dataset_name::String = "full")
     name = model_name(elements, totaldegree, smoothness, rcut, order)
-    dir  = model_dir(name)
+    if (dataset_name == "full")
+        dir  = model_dir(name)
+    else
+        dir  = model_dir(name * "_" * dataset_name)
+    end
     json = joinpath(dir, "$(name).json")
 
     if !isfile(json)
@@ -127,10 +132,16 @@ function build_model(elements::AbstractVector{Symbol}, totaldegree::Int, smoothn
                      force_key::Symbol  = :dft_forces,
                      virial_key::Symbol = :dft_virials,
                      stride::Int        = 1,
+                     dataset_name::String = "full",
                      ace_model_kwargs...)
 
     name = model_name(elements, totaldegree, smoothness, rcut, order)
-    dir  = model_dir(name)
+    if (dataset_name == "full")
+        dir  = model_dir(name)
+    else
+        dir  = model_dir(name * "_" * dataset_name)
+    end
+
     mkpath(joinpath(dir, "results"))
 
     @info "Building model $name"

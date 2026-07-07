@@ -383,11 +383,13 @@ Branches that are entirely negative (imaginary) are drawn in red;
 all others in blue.
 """
 function plot_phonon_bands(x_vals, freqs, x_ticks, labels;
-                           title="Phonon band structure — ACE",
-                           linewidth=1.5)
+                           title="",
+                           linewidth=1.5,
+                           fig_size = (425, 263), 
+                           fontsize = 12)
     Nmodes, Nq = size(freqs)
 
-    fig = Figure(size=(750, 500))
+    fig = Figure(size=fig_size, fontsize=fontsize)
     ax  = Axis(fig[1, 1];
                xlabel       = "Wave vector",
                ylabel       = "Frequency (THz)",
@@ -414,15 +416,18 @@ Same as `plot_phonon_bands` but with the y-axis in meV (ℏω) rather than THz.
 Imaginary (unstable) modes are drawn in red; stable modes in blue.
 """
 function plot_phonon_energy(x_vals, freqs, x_ticks, labels;
-                            title="Phonon band structure — ACE",
-                            linewidth=1.5)
+                            title="",
+                            linewidth=1.5,
+                            fig_size = (425, 263), 
+                            fontsize = 10)
     energy = freqs .* (THz_to_meV / 1000)   # THz → eV
     Nmodes, Nq = size(energy)
 
     emin = floor(minimum(energy) / 0.01) * 0.01
     emax = ceil(maximum(energy)  / 0.01) * 0.01
 
-    fig = Figure(size=(750, 500))
+    fig = Figure(size=fig_size,
+                 fontsize=fontsize)
     ax  = Axis(fig[1, 1];
                xlabel       = "Wave vector",
                ylabel       = "Energy (eV)",
@@ -517,7 +522,7 @@ end
 using ACEWorkflow
 
 # ── Load model (adjust path as needed) ──────────────────────────────────────
-result = load_model(:Al, 20, 4, 6, 3)
+result = load_model(:Al, 14, 4, 6, 2; dataset_name="subset_50_percent")
 model  = result.model
 
 # ── System ───────────────────────────────────────────────────────────────────
@@ -529,7 +534,7 @@ model  = result.model
 # Supercell: 3×3×3 conventional cell (∼12.15 Å sides) — must be ≥ 2× the ACE
 # cutoff (6 Å) so that Φ(i, j+R) decays to zero before the boundary.
 
-N = 3
+N         = 5
 a_eq      = ACEWorkflow.relax_lattice_constant(model, :Al)
 sys_prim  = bulk(:Al; a=a_eq*u"Å")                         # 1 atom, 3 branches
 sys_super = bulk(:Al; a=a_eq*u"Å", cubic=true) * (N,N,N)   # 256 atoms, Hessian source
@@ -544,10 +549,40 @@ n_imag = count(freqs .< 0)
 println("  Frequency range : $ω_min … $ω_max THz")
 n_imag > 0 && println("  Imaginary modes : $n_imag (shown in red)")
 
-fig = plot_phonon_bands(x_vals, freqs, x_ticks, labels;
-                         title     = "Al phonon bands — ACE",
-                         linewidth = 1.5)
+fig = plot_phonon_bands(x_vals, freqs, x_ticks, labels
+                         )
 save("$(result.dir)/results/mean_phonon_bands_ace_sample_scatter_$(N)x$(N)x$(N).png", fig)
+display(fig)
+using ACEpotentials
+model, _ = ACEpotentials.load_model("$(result.dir)/exact_constrained_model.json")
+
+# ── System ───────────────────────────────────────────────────────────────────
+# Primitive cell: 1-atom FCC primitive cell — the D(q) matrix is 3×3, giving
+# the 3 acoustic branches of the FCC crystal with no zone-folding artifacts.
+# Using the conventional 4-atom cell here would make X ≡ Γ (a reciprocal
+# lattice vector of the conventional cell), producing a flat-looking dispersion.
+#
+# Supercell: 3×3×3 conventional cell (∼12.15 Å sides) — must be ≥ 2× the ACE
+# cutoff (6 Å) so that Φ(i, j+R) decays to zero before the boundary.
+
+N         = 5
+a_eq      = ACEWorkflow.relax_lattice_constant(model, :Al)
+sys_prim  = bulk(:Al; a=a_eq*u"Å")                         # 1 atom, 3 branches
+sys_super = bulk(:Al; a=a_eq*u"Å", cubic=true) * (N,N,N)   # 256 atoms, Hessian source
+
+println("\n=== Phonon band structure (ACE) ===")
+x_vals, freqs, x_ticks, labels = compute_phonon_bands(sys_prim, sys_super, model, a_eq;
+                                                      N_per_seg=30, n_modes=nothing)
+
+ω_min = round(minimum(freqs), sigdigits=4)
+ω_max = round(maximum(freqs), sigdigits=4)
+n_imag = count(freqs .< 0)
+println("  Frequency range : $ω_min … $ω_max THz")
+n_imag > 0 && println("  Imaginary modes : $n_imag (shown in red)")
+
+fig = plot_phonon_bands(x_vals, freqs, x_ticks, labels
+                         )
+save("$(result.dir)/results/exact_constrained_mean_phonon_bands_ace_sample_scatter_$(N)x$(N)x$(N).png", fig)
 display(fig)
 # println("  Saved: phonon_bands_ace_scatter.png")
 
@@ -1084,13 +1119,13 @@ function phonon_xpoint_stability_forest(model, forest_vecs, result;
     return (; stable, freqs_THz)
 end
 
-using DelimitedFiles
-forest_mat  = readdlm("$(result.dir)/pops_corrections.csv", ',')
-forest_vecs = [forest_mat[i, :] for i in 1:size(forest_mat, 1)]   # δθ corrections only
-# committee_vecs = forest_vecs
-# x_vals_out, all_freqs, _, _ = phonon_committee(model, committee_vecs, result; N_per_seg=30)
-forest_result = born_stability_forest(model, forest_vecs, result)
-println("\nAll stable? ", all(forest_result.stable))
+# using DelimitedFiles
+# forest_mat  = readdlm("$(result.dir)/pops_corrections.csv", ',')
+# forest_vecs = [forest_mat[i, :] for i in 1:size(forest_mat, 1)]   # δθ corrections only
+# # committee_vecs = forest_vecs
+# # x_vals_out, all_freqs, _, _ = phonon_committee(model, committee_vecs, result; N_per_seg=30)
+# forest_result = born_stability_forest(model, forest_vecs, result)
+# println("\nAll stable? ", all(forest_result.stable))
 
-xpt_result = phonon_xpoint_stability_forest(model, forest_vecs, result)
-println("\nAll X-point stable? ", all(xpt_result.stable))
+# xpt_result = phonon_xpoint_stability_forest(model, forest_vecs, result)
+# println("\nAll X-point stable? ", all(xpt_result.stable))

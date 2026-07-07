@@ -5,7 +5,7 @@ using ACEpotentials, ForwardDiff, Unitful, ACEWorkflow
 using OSQP
 
 # ── Load model ────────────────────────────────────────────────────────────────
-result     = load_model(:Al, 20, 5, 6.0, 3)
+result     = load_model(:Al, 14, 4, 6, 2; dataset_name="subset_50_percent")
 model      = result.model
 A          = result.A
 Y          = result.Y
@@ -22,7 +22,7 @@ a_eq = ACEWorkflow.relax_lattice_constant(model, :Al)
 @printf("a_eq = %.6f Å\n", a_eq)
 
 println("Computing strain Hessian basis at a_eq ...")
-_, H_eq, _ = ACEWorkflow.Elasticity.strain_hessian_GPa(model, :Al; a=a_eq)
+C, H_eq, _ = ACEWorkflow.Elasticity.strain_hessian_GPa(model, :Al; a=a_eq)
 
 # ── Lattice basis derivative for equilibrium constraint ───────────────────────
 function lattice_basis(a_val)
@@ -39,7 +39,7 @@ function constrained_ridge_regression(X_train, Y_train, Gamma, constraint_matrix
     b = - X_train' * Y_train
     osqp_model = OSQP.Model()
     OSQP.setup!(osqp_model; P=sparse(H), q=b, A=sparse(constraint_matrix / Gamma), l=constraint_bounds[1], u=constraint_bounds[2],
-                max_iter=500_000, check_termination=1_000, verbose=true)
+                max_iter=5_000_000_000, check_termination=1_000, verbose=true, eps_abs=1e-9, eps_rel=1e-9)
     results = OSQP.solve!(osqp_model)
     return Gamma \ results.x
 end
@@ -54,16 +54,16 @@ C12_lower    = dot(constraint_2, lin_params)
 C12_upper    = dot(constraint_2, lin_params)
 
 constraint_4 = H_eq[4,4,:]
-C44_lower    = dot(constraint_4, lin_params)
-C44_upper    = dot(constraint_4, lin_params)
+C44_lower    = 0.1#dot(constraint_4, lin_params)
+C44_upper    = Inf#dot(constraint_4, lin_params)
 
 # Born stability: C11 + 2*C12 > 0
 C11_plus_2C12_constraint = constraint_1 .+ 2 .* constraint_2
-C11_plus_2C12_lower      = 2.0
+C11_plus_2C12_lower      = 0.1
 C11_plus_2C12_upper      = Inf
 
 C12_less_than_C11_constraint = constraint_1 .- constraint_2
-C12_less_than_C11_lower      = 2.0
+C12_less_than_C11_lower      = 1.0
 C12_less_than_C11_upper      = Inf
 
 # Lattice constant constraint: b′(a_eq) · θ = 0
@@ -86,10 +86,16 @@ lower_bounds    = [C11_lower, C44_lower,
 upper_bounds    = [C11_upper, C44_upper,
                    C12_less_than_C11_upper, C11_plus_2C12_upper,
                    lattice_eq_upper]
+# all_constraints = vcat(constraint_4')
+# lower_bounds    = [C44_lower]
+# upper_bounds    = [C44_upper]
 
 constraints = (lower_bounds, upper_bounds)
 
-constrained_ridge_teta = constrained_ridge_regression(Ap, Yw, P, all_constraints, constraints; lambda=0.0)
+constrained_ridge_teta = constrained_ridge_regression(Ap, Yw, P, all_constraints, constraints)
+
+ACEpotentials.Models.set_linear_parameters!(model, constrained_ridge_teta)
+a_eq = ACEWorkflow.relax_lattice_constant(model, :Al)
 
 # ── eV → GPa conversion ───────────────────────────────────────────────────────
 sys0      = ACEWorkflow.Elasticity.reference_system(:Al; a=a_eq)
@@ -104,7 +110,7 @@ C44_c = dot(H_eq[4,4,:], constrained_ridge_teta) * eV_to_GPa
 
 C11_nom = C11_lower * eV_to_GPa   # nominal (from lin_params)
 C12_nom = C12_lower * eV_to_GPa
-C44_nom = C44_lower * eV_to_GPa
+C44_nom = dot(constraint_4, lin_params) * eV_to_GPa
 
 println()
 println("── Elastic constants ───────────────────────────────────────")
@@ -123,10 +129,10 @@ println("── Constraint checks ───────────────�
 @test abs(C11_c - C11_nom) < 0.1
 println(abs(C11_c - C11_nom) < 0.1 ? "  ✓" : "  ✗")
 
-# 2. C44 equality
-@printf("  C44 equality:          |Δ| = %.3e GPa", abs(C44_c - C44_nom))
-@test abs(C44_c - C44_nom) < 0.1
-println(abs(C44_c - C44_nom) < 0.1 ? "  ✓" : "  ✗")
+# # 2. C44 equality
+# @printf("  C44 equality:          |Δ| = %.3e GPa", abs(C44_c - C44_nom))
+# @test abs(C44_c - C44_nom) < 0.1
+# println(abs(C44_c - C44_nom) < 0.1 ? "  ✓" : "  ✗")
 
 # 3. Born: C11 > C12
 @printf("  Born C11 - C12:        %.3f GPa", C11_c - C12_c)

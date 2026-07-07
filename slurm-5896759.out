@@ -1,0 +1,32 @@
+WARNING: using Molly.potential_energy in module Main conflicts with an existing identifier.
+┌ Warning: Molly CubicBoundary assumes origin at (0, 0, 0)
+└ @ Molly ~/.julia/packages/Molly/Otudu/src/types.jl:1236
+┌ Info: Temperature history:
+│   sys_md.loggers.temp.history =
+│    1001-element Vector{Quantity{Float64, 𝚯, Unitful.FreeUnits{(K,), 𝚯, nothing}}}:
+│     3453.087362636581 K
+│     2099.6314153916596 K
+│      979.4765210634196 K
+│     1394.5899926818954 K
+│        ⋮
+│     3450.7140767390015 K
+│     3607.0639351529885 K
+└     3746.3800905902604 K
+┌ Info: Energy history:
+│   sys_md.loggers.energy.history =
+│    1001-element Vector{Quantity{Float64, 𝐋^2 𝐌 𝐓^-2, Unitful.FreeUnits{(eV,), 𝐋^2 𝐌 𝐓^-2, nothing}}}:
+│     -3198.1653464670558 eV
+│     -3155.9926411887045 eV
+│     -3112.777490164252 eV
+│     -3122.1976227657724 eV
+│         ⋮
+│     -3054.9262557527477 eV
+│     -3061.0409454510554 eV
+└     -3062.494553949316 eV
+[ Info: Trajectory saved to /storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/models/W_20_4_5A_3/results/NPT_50000_steps_0.5_fs_dt_3600.0_K_0.002_per_fs_friction_unc_0.001_GPa/md_trajectory.extxyz (1001 frames)
+[ Info: Cluster analysis summary:
+[ Info:   Min pair distance (all frames): 2.075839626474048 Å
+[ Info:   Max coordination number seen:   14
+[ Info:   Max cluster size seen:          2 atoms
+┌ Warning: Atoms came closer than 2.2 Å — possible unphysical overlap!
+└ @ Main /storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/scripts/repulsive_core/md_example.jl:278

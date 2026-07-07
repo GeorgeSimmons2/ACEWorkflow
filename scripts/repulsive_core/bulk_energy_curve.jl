@@ -2,7 +2,7 @@ using ACEWorkflow, ACEpotentials, AtomsBuilder, Unitful, CairoMakie, Test
 using AtomsCalculators: potential_energy
 using ACEpotentials: @committee
 
-element = :Al
+element = :W
 result = load_model(element, 20, 4, 6, 3)
 model = result.model
 
