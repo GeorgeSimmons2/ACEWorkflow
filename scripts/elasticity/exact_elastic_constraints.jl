@@ -5,7 +5,7 @@ using ACEpotentials, ForwardDiff, Unitful, ACEWorkflow, AtomsBuilder, StaticArra
 using OSQP
 
 # ── Load model ────────────────────────────────────────────────────────────────
-result     = load_model(:Al, 14, 4, 6, 2; dataset_name="subset_50_percent")
+result     = load_model(:Al, 20, 4, 6, 4)
 model      = result.model
 A          = result.A
 Y          = result.Y

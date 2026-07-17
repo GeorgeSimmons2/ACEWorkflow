@@ -43,6 +43,7 @@ end
 
 using AtomsBuilder, LinearAlgebra
 import AtomsCalculators: potential_energy
+using DelimitedFiles
 
 bulk_bases    = bulk_energy_basis(:W, lattice_constants, model)
 bulk_energies = [dot(bulk_basis, result.lin_params) for bulk_basis in bulk_bases]
@@ -67,17 +68,12 @@ Ap = Diagonal(result.W) * result.A / result.P
 Yw = result.W .* result.Y
 Gamma = result.P
 P = Gamma
-C = Gamma' * Gamma .* (1 / length(Yw)) .+ Ap' * Ap
-A      = C \ Ap'
-leverage = diag(Ap * A)
-constrained_errors = Yw .- (Ap * (P \ constrained_parameters))
-unconstrained_errors = Yw .- (Ap * (P \ result.lin_params))
-constrained_pointwise_corrections = ((P \ (A' .* (constrained_errors ./ leverage))') .+ constrained_parameters)'
-# unconstrained_pointwise_corrections = (P \ (A' .* (unconstrained_errors ./ leverage))' .+ result.lin_params)'
-# # pops_corrections = corrections(Ap, Yw, P)
-pops_eig, pops_bound = hypercube(constrained_pointwise_corrections)
-con_pops_samples, _ = sample_hypercube(pops_eig, pops_bound, constrained_parameters)
-con_pops_samples = vec(reduce(hcat, con_pops_samples))
+pops_corrections = corrections(Ap, Yw, P; coeffs = constrained_parameters)
+pops_eig, pops_bound = hypercube(pops_corrections)
+con_pops_samples, _ = sample_hypercube(pops_eig, pops_bound, constrained_parameters; number_of_committee_members=50)
+# con_pops_samples: Matrix{Float64} of shape (n_params, n_committee_members) — each
+# column is one ensemble parameter vector, dotted with bulk_bases below to build an
+# ensemble of energy curves for the uncertainty strip.
 
 # ace_positive_core_constrained_parameters = constrained_ridge_regression(Ap, Yw, Gamma, constraint_matrix, bounds)
 ace_positive_core_constrained_parameters = vec(readdlm("$(result.dir)/positive_core_constrained_parameters.csv", ','))
@@ -86,13 +82,21 @@ unc_model = deepcopy(model)
 ACEpotentials.Models.set_linear_parameters!(ace_positive_core_model, ace_positive_core_constrained_parameters)
 ACEpotentials.Models.set_linear_parameters!(unc_model, result.lin_params)
 
-full_lattice_constants = vcat(collect(lattice_constants), collect(LinRange(maximum(lattice_constants), 2 * maximum(lattice_constants), 50)[2:end]))
-full_bulk_bases    = bulk_energy_basis(:W, full_lattice_constants, model)
-constrained_bulk_energies = [dot(bulk_basis, ace_positive_core_constrained_parameters) for bulk_basis in full_bulk_bases]
-unconstrained_bulk_energies = [dot(bulk_basis, result.lin_params) for bulk_basis in full_bulk_bases]
-zbl_energies  = bulk_energy_curve(:W, full_lattice_constants, W_zbl)
-constrained_bulk_energies_add_zbl = constrained_bulk_energies .+ zbl_energies
+full_lattice_constants              = vcat(collect(lattice_constants), collect(LinRange(maximum(lattice_constants), 2 * maximum(lattice_constants), 50)[2:end]))
+full_bulk_bases                     = bulk_energy_basis(:W, full_lattice_constants, model)
+constrained_bulk_energies           = [dot(bulk_basis, ace_positive_core_constrained_parameters) for bulk_basis in full_bulk_bases]
+unconstrained_bulk_energies         = [dot(bulk_basis, result.lin_params) for bulk_basis in full_bulk_bases]
+zbl_energies                        = bulk_energy_curve(:W, full_lattice_constants, W_zbl)
+constrained_bulk_energies_add_zbl   = constrained_bulk_energies .+ zbl_energies
 unconstrained_bulk_energies_add_zbl = unconstrained_bulk_energies .+ zbl_energies
+
+# Ensemble of EOS curves from the hypercube committee: each column of con_pops_samples
+# is one ensemble parameter vector, dotted with the same full_bulk_bases used for the
+# mean constrained curve above. This gives the uncertainty strip plotted below.
+ensemble_bulk_energies = reduce(hcat,
+    [[dot(bulk_basis, θ) for bulk_basis in full_bulk_bases] for θ in eachcol(con_pops_samples)])
+ensemble_lo = vec(minimum(ensemble_bulk_energies, dims=2))
+ensemble_hi = vec(maximum(ensemble_bulk_energies, dims=2))
 
 using LinearAlgebra, DelimitedFiles
 using Unitful, ExtXYZ
@@ -245,6 +249,11 @@ ax1 = Axis(fig[1, 1];
     yticklabelsize = 16
 )
 
+band!(ax1, full_lattice_constants, ensemble_lo, ensemble_hi;
+    color=(:steelblue, 0.25),
+    label="ACE constrained (ensemble spread)"
+)
+
 lines!(ax1, full_lattice_constants, constrained_bulk_energies;
     color=:steelblue, linewidth=3,
     label="ACE constrained"
@@ -317,5 +326,5 @@ rowgap!(fig.layout, 20)
 # -----------------------------
 # SAVE (IMPORTANT: use vector format for papers)
 # -----------------------------
-save("$(result.dir)/results/eos_with_pair_hist.pdf", fig)
-save("$(result.dir)/results/eos_with_pair_hist.png", fig; px_per_unit = 2)
+save("$(result.dir)/results/eos_with_pair_hist_uncertainty.pdf", fig)
+save("$(result.dir)/results/eos_with_pair_hist_uncertainty.png", fig; px_per_unit = 2)

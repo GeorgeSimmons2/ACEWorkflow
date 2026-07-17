@@ -520,10 +520,34 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 using ACEWorkflow
+using LinearAlgebra, ACEpotentials
+import ACEWorkflow: phonon_committee  
 
 # ── Load model (adjust path as needed) ──────────────────────────────────────
-result = load_model(:Al, 14, 4, 6, 2; dataset_name="subset_50_percent")
+result = load_model(:Al, 12, 4, 6, 2; dataset_name="subset_10_percent")
 model  = result.model
+
+A = result.A
+Y = result.Y
+W = result.W
+P = result.P
+
+
+con_model, _ = ACEpotentials.load_model("$(result.dir)/constrained_model.json")
+constrained_params = vec(vcat(con_model.ps[1], con_model.ps[2]))
+
+Ap = Diagonal(W) * A / P
+Yw = Y .* W
+pops_corr = corrections(Ap, Yw, P)
+hyp_eig, hyp_bound = hypercube(pops_corr)
+samples, _ = sample_hypercube(hyp_eig, hyp_bound, result.lin_params; number_of_committee_members=5)
+samples = [samples[:,i] for i=1:size(samples,2)]
+con_samples, _ = sample_hypercube(hyp_eig, hyp_bound, constrained_params; number_of_committee_members=50)
+con_samples = [con_samples[:,i] for i=1:size(con_samples,2)]
+con_forest_result = born_stability_committee(con_model, con_samples, result)
+con_samples = con_samples[con_forest_result[:stable][2:end]]
+
+x_vals_out, all_freqs, _, _ = phonon_committee(model, con_samples, result; N_per_seg=30)
 
 # ── System ───────────────────────────────────────────────────────────────────
 # Primitive cell: 1-atom FCC primitive cell — the D(q) matrix is 3×3, giving
@@ -566,12 +590,12 @@ model, _ = ACEpotentials.load_model("$(result.dir)/exact_constrained_model.json"
 # cutoff (6 Å) so that Φ(i, j+R) decays to zero before the boundary.
 
 N         = 5
-a_eq      = ACEWorkflow.relax_lattice_constant(model, :Al)
+a_eq      = ACEWorkflow.relax_lattice_constant(con_model, :Al)
 sys_prim  = bulk(:Al; a=a_eq*u"Å")                         # 1 atom, 3 branches
 sys_super = bulk(:Al; a=a_eq*u"Å", cubic=true) * (N,N,N)   # 256 atoms, Hessian source
 
 println("\n=== Phonon band structure (ACE) ===")
-x_vals, freqs, x_ticks, labels = compute_phonon_bands(sys_prim, sys_super, model, a_eq;
+x_vals, freqs, x_ticks, labels = compute_phonon_bands(sys_prim, sys_super, con_model, a_eq;
                                                       N_per_seg=30, n_modes=nothing)
 
 ω_min = round(minimum(freqs), sigdigits=4)
@@ -610,9 +634,11 @@ Also saves two overlay plots to `result.dir/results/`:
 
 Committee members are drawn in light grey; the mean model is drawn in blue/red.
 """
-function phonon_committee(model, coeffs_committee, result; N_per_seg=30, N_cell=2)
+function phonon_committee(model, coeffs_committee, result; N_per_seg=30, N_cell=2, orig_coeffs=nothing)
     # Save original coefficients so we can restore them after the loop
-    orig_coeffs = result.lin_params
+    if (orig_coeffs == nothing)
+        orig_coeffs = result.lin_params
+    end
     N = length(coeffs_committee)
     all_freqs = Vector{Matrix{Float64}}(undef, N + 1)
     x_vals_out = nothing
@@ -647,6 +673,7 @@ function phonon_committee(model, coeffs_committee, result; N_per_seg=30, N_cell=
     end
 
     # Restore original (mean) model
+
     ACEpotentials.Models.set_linear_parameters!(model, orig_coeffs)
 
     # ── Plot (THz) ──────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ import AtomsCalculators: forces, potential_energy
 Random.seed!(1234)
 
 # ── Load model ────────────────────────────────────────────────────────────────
-result = load_model(:Al, 16, 4, 6, 2)
+result = load_model(:Al, 20, 4, 6, 4)#; dataset_name="subset_50_percent")
 model  = result.model
 
 testing_configs = ExtXYZ.load("/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/data/Al/manual_df_test_Al.xyz")
