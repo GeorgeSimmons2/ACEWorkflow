@@ -1,27 +1,32 @@
 # npt_thermal_expansion_worst_member_Al_12_4_6A_2.jl
 #
-# "Final boss" of the unstable phonons in Al_12_4_6A_2_ (full dataset):  take the
-# single NAIVE POPS committee member with the most-negative band-path phonon and
-# show that pure thermal expansion (NPT at 0 Pa) lifts its soft mode from
-# NEGATIVE back to POSITIVE — the harmonic instability is healed anharmonically.
+# "Final boss" of the unstable phonons in Al_12_4_6A_2_ (full dataset).
 #
-# Pipeline
-#   1. Reproduce the naive committee EXACTLY as bandpath_committee_undotted_Al_12_4_6A_2.jl
-#      (same load_model, seed 1234, leverage/residual/random selection) and pick
-#      θ_worst = argmin min_freq_stable — this ties to that script's bands_naive.png.
-#   2. NPT at 0 Pa (Langevin + MonteCarloBarostat) at 300/500/700/900 K on a 4×4×4
-#      FCC supercell (256 atoms), started from θ_worst's OWN 0 K relaxed a₀.  Average
-#      the volume over the production window → a(T), thermal expansion Δa/a₀, and α.
-#   3. The money plot: rebuild the undotted band path at a₀ and at each a(T) and
-#      recompute θ_worst's phonons.  min ω goes from < 0 at a₀ to > 0 at a(T).
-#   4. Full "W-machinery" MD diagnostics per T (RDF, MSD, T/E/V convergence, cluster
-#      / overlap check) + extXYZ trajectory, all publication quality, saved under
-#      models/Al_12_4_6A_2_/results/npt_thermal_expansion_worst_member/.
+# Two members are identified from the committee study:
+#   • θ_naive_worst — the WORST UNCONSTRAINED member of the original 30-draw
+#     (argmin min_freq_stable over the naive forest; the softest curve in
+#     results/bandpath_phonon_uq/bands_naive.pdf).  This is the "before".
+#   • θ_con_soft   — the SOFTEST CONSTRAINED member across the repaired ∪ rejection
+#     hypercube committees (argmin min_freq_stable over both saved CSVs; the softest
+#     curve in results/bandpath_phonon_uq/bands_constrained.pdf).  This is the "after".
 #
-# All phonon/undotted machinery + Γ-correct band plotting lives in
+# We (1) plot before-vs-after constraining (θ_naive_worst NEGATIVE → θ_con_soft
+# POSITIVE across the BZ), and (2) run an NPT thermal-expansion study (0 Pa) on the
+# softest CONSTRAINED vector — measuring a(T), the linear expansion coefficient α,
+# and confirming dynamical stability at finite T (RDF / MSD / cluster diagnostics).
+#
+# Selection metric geometry = the mean-model a (a_eq), matching how bands_naive /
+# bands_constrained were plotted.  The NPT baseline geometry = the chosen member's
+# OWN 0 K relaxed a₀.
+#
+# PROVENANCE NOTE:  the referenced PDFs live in results/bandpath_phonon_uq/ (a re-plot
+# with the updated lib) but that run saved no CSVs.  The only saved committee CSVs are
+# in results/bandpath_undotted/ (committee_{repaired,rejection}.csv) — the same
+# deterministic (seed 1234) pipeline — so those are what we read.
+#
+# All phonon/undotted machinery + Γ-correct band plotting live in
 # ../bandpath_phonon_uq/lib.jl.  NPT MD mirrors ../repulsive_core/md_example.jl but
-# fixes the per-frame box (the box VOLUME changes under NPT, so RDF/MSD must use each
-# frame's own box, not a single fixed one).
+# fixes the per-frame box (box VOLUME changes under NPT → RDF/MSD use each frame's box).
 #
 # Run (cluster):  sbatch scripts/uq/run_npt_thermal_expansion.slurm
 # Run (local):    julia --project -t <N> scripts/uq/npt_thermal_expansion_worst_member_Al_12_4_6A_2.jl
@@ -37,7 +42,12 @@ dataset          = ""          # "" → full-dataset model (Al_12_4_6A_2_)
 N_cell_fc        = 3           # 3×3×3 for the undotted band-path Hessian
 N_per_seg        = 20
 n_lev, n_res, n_rand = 5, 10, 15
-scan_full_forest = false       # true → also argmin over the WHOLE forest (slow) as a sanity check
+committee_subdir = "bandpath_undotted"   # where committee_{repaired,rejection}.csv live
+
+# which member drives the NPT run:
+#   :softest_constrained → θ_con_soft (the "minimum one saved"; already stable — default)
+#   :worst_naive         → θ_naive_worst (the soft one; watch thermal expansion heal it)
+npt_vector = :softest_constrained
 
 # ── config: NPT thermal-expansion sweep ──────────────────────────────────────
 supercell     = (4, 4, 4)              # 256-atom FCC supercell
@@ -53,16 +63,17 @@ log_every     = 50
 result = load_model(element, 12, 4, 6, 2; dataset_name=dataset)
 model  = result.model; lin_params = result.lin_params; n_params = length(lin_params)
 P = result.P; Ap = Diagonal(result.W)*result.A/P; Yw = result.W.*result.Y; λ = 1.0/size(Ap,1)
+committee_dir = "$(result.dir)/results/$committee_subdir"
 outdir = "$(result.dir)/results/npt_thermal_expansion_worst_member"; mkpath(outdir)
 @printf("Model %s: %d params, %d threads.  Outputs → %s\n", result.name, n_params, Threads.nthreads(), outdir)
 
-# reference (mean-model) geometry — used ONLY to rank naive members by the same
-# metric the committee script uses (so θ_worst matches its bands_naive.png)
+# reference (mean-model) geometry — the geometry bands_naive / bands_constrained
+# were plotted at, so "worst" and "softest" are ranked consistently with them
 a_mean = ACEWorkflow.relax_lattice_constant(model, element)
-@printf("Mean-model a = %.5f Å  (naive-ranking geometry)\n", a_mean)
+@printf("Mean-model a = %.5f Å  (ranking geometry)\n", a_mean)
 bp_mean = bandpath_Dk(result, model, element, a_mean, N_cell_fc; N_per_seg=N_per_seg)
 
-# leverage/residual forest (Stage-1 machinery of the committee script)
+# ── "before": worst UNCONSTRAINED member of the original 30-draw ─────────────
 C = Symmetric(Ap'*Ap .+ λ.*(P'*P)); Cf = cholesky(C)
 AtX = Cf\Matrix(Ap'); θ̃ = Cf\(Ap'*Yw)
 leverage = vec(sum(Ap'.*AtX; dims=1)); residual = Yw .- Ap*θ̃
@@ -76,38 +87,68 @@ selected = vcat(lev_idx, res_idx, rand_idx)
 naive    = [forest_member(i) for i in selected]
 minf_naive = [min_freq_stable(θ, bp_mean) for θ in naive]
 
-kworst  = argmin(minf_naive); i_worst = selected[kworst]; θ_worst = naive[kworst]
-@printf("\n── Worst naive member ───────────────────────────────────────\n")
-@printf("  committee slot %d (obs %d): min ω = %.3f THz at a_mean\n", kworst, i_worst, minf_naive[kworst])
-@printf("  naive committee min ω ∈ [%.3f, %.3f] THz\n", minimum(minf_naive), maximum(minf_naive))
+kw = argmin(minf_naive); θ_naive_worst = naive[kw]; minω_nw = minf_naive[kw]
+@printf("\n── 'before': worst naive member ─────────────────────────────\n")
+@printf("  slot %d (obs %d): min ω = %+.3f THz   (naive committee ∈ [%+.3f, %+.3f])\n",
+        kw, selected[kw], minω_nw, minimum(minf_naive), maximum(minf_naive))
 
-if scan_full_forest
-    println("  scanning the full forest for a more-negative member …")
-    mf = fill(Inf, length(Yw))
-    Threads.@threads for i in 1:length(Yw)
-        mf[i] = min_freq_stable(forest_member(i), bp_mean)
-    end
-    gi = argmin(mf)
-    @printf("  full-forest worst: obs %d, min ω = %.3f THz%s\n", gi, mf[gi],
-            gi == i_worst ? "  (same as committee pick)" : "  ← MORE negative than the committee pick!")
+# ── "after": softest CONSTRAINED member across repaired ∪ rejection ──────────
+rep = readdlm("$committee_dir/committee_repaired.csv", ',')     # 30 × n_params
+rej = readdlm("$committee_dir/committee_rejection.csv", ',')    # 30 × n_params
+@assert size(rep,2) == n_params && size(rej,2) == n_params "committee CSV width ≠ n_params"
+con_members = vcat([collect(Float64, r) for r in eachrow(rep)], [collect(Float64, r) for r in eachrow(rej)])
+con_src     = vcat(fill("repaired", size(rep,1)), fill("rejection", size(rej,1)))
+con_row     = vcat(1:size(rep,1), 1:size(rej,1))
+minf_con    = [min_freq_stable(θ, bp_mean) for θ in con_members]
+
+js = argmin(minf_con); θ_con_soft = con_members[js]; minω_cs = minf_con[js]
+@printf("\n── 'after': softest constrained member ──────────────────────\n")
+@printf("  %s[%d]: min ω = %+.3f THz   (constrained ∈ [%+.3f, %+.3f], %d members)\n",
+        con_src[js], con_row[js], minω_cs, minimum(minf_con), maximum(minf_con), length(con_members))
+
+writedlm("$outdir/theta_naive_worst.csv", θ_naive_worst, ',')
+writedlm("$outdir/theta_con_soft.csv",   θ_con_soft, ',')
+
+# ── money plot A: before → after constraining (negative → positive) ──────────
+let bnw = bands(θ_naive_worst, bp_mean), bcs = bands(θ_con_soft, bp_mean)
+    ylo = min(minimum(bnw), minimum(bcs)); yhi = max(maximum(bnw), maximum(bcs)); pad = 0.05*(yhi-ylo)
+    fig = Figure(size=(400,320), figure_padding=(6,10,4,6))
+    ax  = Axis(fig[1,1]; xlabel="Wave vector", ylabel="Frequency (THz)",
+               title="Al_12_4_6A_2_ — most-negative naive → softest constrained",
+               titlesize=10, xlabelsize=11, ylabelsize=11, xticklabelsize=10, yticklabelsize=10,
+               xticks=(bp_mean.x_ticks, bp_mean.labels), xgridvisible=false, ygridvisible=false,
+               xtickalign=1, ytickalign=1)
+    for b in 1:3bp_mean.Np; lines!(ax, bp_mean.x_vals, bnw[b,:]; color=RGBAf(0.80,0.15,0.15,0.7), linewidth=1.0); end
+    for b in 1:3bp_mean.Np; lines!(ax, bp_mean.x_vals, bcs[b,:]; color=RGBf(0.0,0.447,0.698), linewidth=1.2); end
+    hlines!(ax, [0.0]; color=:black, linestyle=:dash, linewidth=0.8)
+    vlines!(ax, bp_mean.x_ticks; color=(:black,0.22), linewidth=0.6)
+    xlims!(ax, first(bp_mean.x_vals), last(bp_mean.x_vals)); ylims!(ax, ylo-pad, yhi+pad)
+    elem = [LineElement(color=RGBAf(0.80,0.15,0.15,0.7)), LineElement(color=RGBf(0.0,0.447,0.698))]
+    Legend(fig[1,1], elem, ["naive worst  (min ω $(round(minω_nw;digits=2)) THz)",
+                            "constrained softest  (min ω $(round(minω_cs;digits=2)) THz)"];
+           tellwidth=false, tellheight=false, halign=:left, valign=:bottom, margin=(8,8,8,8),
+           framevisible=true, labelsize=8, patchsize=(16,10))
+    save("$outdir/bands_before_after_constraining.pdf", fig); save("$outdir/bands_before_after_constraining.png", fig; px_per_unit=4)
 end
 
-writedlm("$outdir/worst_member_theta.csv", θ_worst, ',')
+# ── choose the NPT member ────────────────────────────────────────────────────
+θ_npt, npt_label = npt_vector == :worst_naive ? (θ_naive_worst, "naive-worst") : (θ_con_soft, "constrained-softest")
+@printf("\nNPT thermal-expansion member: %s (min ω at a_mean = %+.3f THz)\n",
+        npt_label, npt_vector == :worst_naive ? minω_nw : minω_cs)
 
-# ── θ_worst's own 0 K equilibrium + its (soft) phonons there ─────────────────
-ACEpotentials.Models.set_linear_parameters!(model, θ_worst)
+# ── its own 0 K equilibrium + phonons there ─────────────────────────────────
+ACEpotentials.Models.set_linear_parameters!(model, θ_npt)
 a0 = try
     a = ACEWorkflow.relax_lattice_constant(model, element)
-    (0.9a_mean < a < 1.1a_mean) ? a : (@warn "θ_worst relaxed a=$a Å is implausible; using a_mean"; a_mean)
+    (0.9a_mean < a < 1.1a_mean) ? a : (@warn "relaxed a=$a Å is implausible; using a_mean"; a_mean)
 catch e
-    @warn "relax_lattice_constant failed for θ_worst ($e); using a_mean"; a_mean
+    @warn "relax_lattice_constant failed ($e); using a_mean"; a_mean
 end
-@printf("\nθ_worst 0 K relaxed a₀ = %.5f Å  (thermal-expansion baseline)\n", a0)
-
+@printf("NPT member 0 K relaxed a₀ = %.5f Å  (thermal-expansion baseline)\n", a0)
 bp_a0    = bandpath_Dk(result, model, element, a0, N_cell_fc; N_per_seg=N_per_seg)
-minω_a0  = min_freq_stable(θ_worst, bp_a0)
-bands_a0 = bands(θ_worst, bp_a0)
-@printf("θ_worst 0 K phonons at a₀: min ω = %.3f THz  (the 'most negative' start)\n", minω_a0)
+minω_a0  = min_freq_stable(θ_npt, bp_a0)
+bands_a0 = bands(θ_npt, bp_a0)
+@printf("NPT member 0 K phonons at a₀: min ω = %+.3f THz\n", minω_a0)
 
 # ── publication plot helper ──────────────────────────────────────────────────
 _savepub(fig, stem) = (save("$stem.pdf", fig); save("$stem.png", fig; px_per_unit=4))
@@ -156,8 +197,8 @@ function analyze_md(sys_md, dir, T_K; log_every, equil_frames, N_super)
             r < r_max || continue; b = floor(Int, r/dr)+1; b <= n_bins && (rdf_counts[b] += 2)
         end
     end
-    ρ̄ = ρacc/length(prod)
-    rdf = [rdf_counts[k]/(length(prod)*n_atoms*4π*r_mids[k]^2*dr*ρ̄) for k in 1:n_bins]
+    ρbar = ρacc/length(prod)
+    rdf = [rdf_counts[k]/(length(prod)*n_atoms*4π*r_mids[k]^2*dr*ρbar) for k in 1:n_bins]
 
     # ── MSD relative to first production frame (per-frame minimum image) ─────
     ref = [ustrip.(u"Å", c) for c in coords_hist[first(prod)]]
@@ -196,12 +237,12 @@ function analyze_md(sys_md, dir, T_K; log_every, equil_frames, N_super)
     end
 
     # ── plots (PDF + hi-DPI PNG) ────────────────────────────────────────────
-    fr = Figure(size=(560,340)); axr = Axis(fr[1,1]; title="RDF — Al θ_worst NPT $(round(Int,T_K)) K",
+    fr = Figure(size=(560,340)); axr = Axis(fr[1,1]; title="RDF — Al NPT $(round(Int,T_K)) K",
         xlabel="r (Å)", ylabel="g(r)", xgridvisible=false, ygridvisible=false)
     lines!(axr, r_mids, rdf; color=RGBf(0.0,0.447,0.698))
     vlines!(axr, [2.0]; color=(:red,0.6), linestyle=:dash); _savepub(fr, "$dir/md_rdf")
 
-    fm = Figure(size=(560,340)); axm = Axis(fm[1,1]; title="MSD — Al θ_worst NPT $(round(Int,T_K)) K",
+    fm = Figure(size=(560,340)); axm = Axis(fm[1,1]; title="MSD — Al NPT $(round(Int,T_K)) K",
         xlabel="Time (fs)", ylabel="MSD (Å²)", xgridvisible=false, ygridvisible=false)
     lines!(axm, t_prod, msd; color=RGBf(0.835,0.369,0.0)); _savepub(fm, "$dir/md_msd")
 
@@ -232,11 +273,11 @@ end
 equil_frames = div(n_equil, log_every)
 N_super      = supercell[1]
 a_of_T = Float64[]; a_of_T_std = Float64[]; minω_of_T = Float64[]; bands_hi = nothing; a_hi = a0
-println("\n── NPT sweep (0 Pa) from a₀ = $(round(a0;digits=5)) Å ─────────────")
+println("\n── NPT sweep (0 Pa) on $npt_label from a₀ = $(round(a0;digits=5)) Å ─────────────")
 for (ti, T_K) in enumerate(temperatures_K)
     global bands_hi, a_hi
     T = T_K * u"K"
-    ACEpotentials.Models.set_linear_parameters!(model, θ_worst)   # bandpath_Dk resets model → re-set each T
+    ACEpotentials.Models.set_linear_parameters!(model, θ_npt)   # bandpath_Dk resets model → re-set each T
     sys    = bulk(element, a=a0*u"Å", cubic=true) * supercell
     sys_md = Molly.System(sys; force_units=u"eV/Å", energy_units=u"eV")
     sys_md = Molly.System(sys_md;
@@ -256,19 +297,19 @@ for (ti, T_K) in enumerate(temperatures_K)
 
     # phonons at the thermally-expanded lattice
     bp_aT = bandpath_Dk(result, model, element, ana.a_T, N_cell_fc; N_per_seg=N_per_seg)
-    mω    = min_freq_stable(θ_worst, bp_aT)
+    mω    = min_freq_stable(θ_npt, bp_aT)
     push!(a_of_T, ana.a_T); push!(a_of_T_std, ana.a_T_std); push!(minω_of_T, mω)
-    if ti == length(temperatures_K); bands_hi = bands(θ_worst, bp_aT); a_hi = ana.a_T; end
+    if ti == length(temperatures_K); bands_hi = bands(θ_npt, bp_aT); a_hi = ana.a_T; end
     @printf("    a(%.0f K) = %.5f ± %.5f Å  (Δa/a₀ = %+.2f%%),  ⟨T⟩ = %.0f K,  min ω = %+.3f THz  [%.1f min]\n",
             T_K, ana.a_T, ana.a_T_std, 100*(ana.a_T-a0)/a0, ana.mean_T, mω, el/60)
 end
 
-# ── money plot 1: soft → healed band structure (a₀ vs highest-T a) ───────────
+# ── money plot B: NPT member phonons, a₀ vs highest-T a ──────────────────────
 let ylo = min(minimum(bands_a0), minimum(bands_hi)), yhi = max(maximum(bands_a0), maximum(bands_hi))
     pad = 0.05*(yhi-ylo)
     fig = Figure(size=(400,320), figure_padding=(6,10,4,6))
     ax  = Axis(fig[1,1]; xlabel="Wave vector", ylabel="Frequency (THz)",
-               title="Al_12_4_6A_2_ worst member — thermal healing of the soft mode",
+               title="NPT member ($npt_label) — phonons at a₀ vs thermally-expanded a(T)",
                titlesize=10, xlabelsize=11, ylabelsize=11, xticklabelsize=10, yticklabelsize=10,
                xticks=(bp_a0.x_ticks, bp_a0.labels), xgridvisible=false, ygridvisible=false,
                xtickalign=1, ytickalign=1)
@@ -282,23 +323,22 @@ let ylo = min(minimum(bands_a0), minimum(bands_hi)), yhi = max(maximum(bands_a0)
                             "a = $(round(a_hi;digits=4)) Å  ($(round(Int,temperatures_K[end])) K, min ω $(round(minω_of_T[end];digits=2)))"];
            tellwidth=false, tellheight=false, halign=:left, valign=:bottom, margin=(8,8,8,8),
            framevisible=true, labelsize=8, patchsize=(16,10))
-    _savepub(fig, "$outdir/bands_healing_soft_to_positive")
+    _savepub(fig, "$outdir/bands_npt_member_a0_vs_aT")
 end
 
-# ── money plot 2: min ω vs lattice constant (negative → positive crossing) ──
+# ── money plot C: min ω vs lattice constant ─────────────────────────────────
 let
     a_pts = vcat(a0, a_of_T); ω_pts = vcat(minω_a0, minω_of_T); Tlab = vcat(0.0, temperatures_K)
     fig = Figure(size=(430,330), figure_padding=(6,10,4,6))
     ax  = Axis(fig[1,1]; xlabel="Lattice constant a (Å)", ylabel="min non-acoustic ω (THz)",
-               title="Soft mode vs lattice constant — thermal expansion heals it",
+               title="NPT member ($npt_label) — soft mode vs lattice constant",
                titlesize=10, xlabelsize=11, ylabelsize=11, xticklabelsize=10, yticklabelsize=10,
                xgridvisible=false, ygridvisible=false, xtickalign=1, ytickalign=1)
     hlines!(ax, [0.0]; color=:black, linestyle=:dash, linewidth=0.8)
     lines!(ax, a_pts, ω_pts; color=(RGBf(0.0,0.447,0.698),0.5), linewidth=1.0)
     scatter!(ax, a_pts, ω_pts; color=RGBf(0.0,0.447,0.698), markersize=9)
     for (a, ω, T) in zip(a_pts, ω_pts, Tlab)
-        text!(ax, a, ω; text=(T==0 ? "0 K" : "$(round(Int,T)) K"), fontsize=9,
-              align=(:left,:bottom), offset=(4,2))
+        text!(ax, a, ω; text=(T==0 ? "0 K" : "$(round(Int,T)) K"), fontsize=9, align=(:left,:bottom), offset=(4,2))
     end
     _savepub(fig, "$outdir/minomega_vs_lattice")
 end
@@ -325,6 +365,7 @@ end
 
 # ── summary table ────────────────────────────────────────────────────────────
 open("$outdir/thermal_expansion_summary.csv", "w") do io
+    println(io, "# npt_member=$npt_label  naive_worst_minomega=$(round(minω_nw;digits=4))  con_soft_minomega=$(round(minω_cs;digits=4))  con_soft_source=$(con_src[js])[$(con_row[js])]")
     println(io, "T_K,a_Ang,a_std_Ang,delta_a_over_a0_pct,min_omega_THz")
     @printf(io, "0,%.6f,0,0,%.4f\n", a0, minω_a0)
     for (T, a, s, ω) in zip(temperatures_K, a_of_T, a_of_T_std, minω_of_T)
@@ -334,7 +375,7 @@ end
 
 ACEpotentials.Models.set_linear_parameters!(model, lin_params)
 println("\n══ RESULT ══════════════════════════════════════════════════")
-@printf("  θ_worst (obs %d): min ω %+.3f THz at a₀=%.4f Å  →  %+.3f THz at a(%.0f K)=%.4f Å\n",
-        i_worst, minω_a0, a0, minω_of_T[end], temperatures_K[end], a_of_T[end])
-@printf("  soft mode healed by thermal expansion: %s\n", (minω_a0 < 0 && minω_of_T[end] > 0) ? "YES ✓" : "check outputs")
+@printf("  before→after constraining: naive worst %+.3f THz  →  constrained softest %+.3f THz\n", minω_nw, minω_cs)
+@printf("  NPT member (%s): min ω %+.3f THz at a₀=%.4f Å  →  %+.3f THz at a(%.0f K)=%.4f Å\n",
+        npt_label, minω_a0, a0, minω_of_T[end], temperatures_K[end], a_of_T[end])
 println("  All outputs → $outdir/")
