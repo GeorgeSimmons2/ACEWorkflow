@@ -41,6 +41,9 @@ export dynamical_matrix_ace
 export eigenvalues_to_freq_THz
 export dq_eigensystem
 export fcc_band_path
+export bcc_band_path
+export hcp_band_path
+export bulk_prim_super
 export compute_phonon_bands
 export plot_phonon_bands
 export plot_phonon_energy

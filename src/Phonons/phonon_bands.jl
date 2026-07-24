@@ -334,6 +334,122 @@ function bcc_band_path(L; N_per_seg=30)
     return q_list, x_vals, x_ticks, labels, seg_starts
 end
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  HCP Brillouin-zone path
+#
+#  Path: Γ → M → K → Γ → A → L → H → A
+#
+#  Hexagonal Bravais lattice (a₁,a₂ equal length at 120°, a₃ ∥ c).  High-symmetry
+#  points in fractional coordinates of the PRIMITIVE reciprocal lattice vectors
+#  (b_i = columns of B = 2π L^{-T}), Setyawan–Curtarolo HEX convention:
+#    Γ = ( 0,    0,   0  )
+#    M = ( 1/2,  0,   0  )  zone-edge midpoint       |ΓM| = 2π/(√3 a)
+#    K = ( 1/3,  1/3, 0  )  zone corner              |ΓK| = 4π/(3a)
+#    A = ( 0,    0,   1/2)  c-axis face centre
+#    L = ( 1/2,  0,   1/2)  M lifted to the top face
+#    H = ( 1/3,  1/3, 1/2)  K lifted to the top face
+#  The basal plane (Γ-M-K-Γ), the c-axis (Γ-A) and the top face (A-L-H-A) are
+#  all sampled, so both acoustic and optical branches are covered.
+# ─────────────────────────────────────────────────────────────────────────────
+"""
+    hcp_band_path(L; N_per_seg=30)
+
+Return `(q_list, x_coords, x_ticks, tick_labels, seg_starts)` for the HCP path
+Γ → M → K → Γ → A → L → H → A.
+`L` is the 3×3 primitive lattice matrix (columns = lattice vectors, in Å);
+`N_per_seg` gives the number of q-points per segment.
+`seg_starts[iq]` is true only for the first q-point (used by branch tracking).
+"""
+function hcp_band_path(L; N_per_seg=30)
+    B = 2π * inv(transpose(L))   # reciprocal lattice vectors as columns
+
+    frac = (
+        Γ = [0.0,     0.0,     0.0],
+        M = [0.5,     0.0,     0.0],
+        K = [1/3,     1/3,     0.0],
+        A = [0.0,     0.0,     0.5],
+        Lp = [0.5,    0.0,     0.5],
+        H = [1/3,     1/3,     0.5],
+    )
+
+    pts = (
+        Γ = B * frac.Γ,
+        M = B * frac.M,
+        K = B * frac.K,
+        A = B * frac.A,
+        L = B * frac.Lp,
+        H = B * frac.H,
+    )
+
+    segs   = [(:Γ, :M), (:M, :K), (:K, :Γ), (:Γ, :A), (:A, :L), (:L, :H), (:H, :A)]
+    labels = ["Γ", "M", "K", "Γ", "A", "L", "H", "A"]
+
+    q_list     = Vector{Float64}[]
+    x_vals     = Float64[]
+    seg_starts = Bool[]
+    x_ticks    = Float64[0.0]
+    x = 0.0
+
+    for (s, (l1, l2)) in enumerate(segs)
+        q1 = getfield(pts, l1)
+        q2 = getfield(pts, l2)
+
+        seg_len = norm(q2 - q1)
+        is_last = (s == length(segs))
+
+        ts = is_last ? range(0.0, 1.0, N_per_seg + 1) :
+                       range(0.0, 1.0, N_per_seg + 1)[1:end-1]
+
+        for (ti, t) in enumerate(ts)
+            q = q1 .+ t .* (q2 .- q1)
+            push!(q_list, q)
+            push!(x_vals, x + t * seg_len)
+            push!(seg_starts, s == 1 && ti == 1)
+        end
+
+        x += seg_len
+        push!(x_ticks, x)
+    end
+
+    return q_list, x_vals, x_ticks, labels, seg_starts
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Primitive + supercell builder for the force-constant Hessian
+#
+#  Chooses the right Bravais lattice from AtomsBuilder's database (fcc / bcc /
+#  diamond / hcp) so the same driver works for Al, W, Si, Mg, …
+# ─────────────────────────────────────────────────────────────────────────────
+"""
+    bulk_prim_super(element; a=nothing, c=nothing, N_cell=3, structure=nothing)
+
+Build `(sys_prim, sys_super)` for `element`: the primitive cell (used for the
+Brillouin-zone path and the 3·Np phonon branches) and an `N_cell³` supercell
+(used once for the force-constant Hessian).  The Bravais lattice is taken from
+AtomsBuilder's database unless given explicitly via `structure`
+(`:fcc` / `:bcc` / `:diamond` / `:hcp`).
+
+`precompute_force_constants` needs the supercell to be at least twice the model
+cutoff in every direction so the individual force constants Φ(i,j+R) are
+isolated, so pick `N_cell ≥ 2·r_cut / (min lattice spacing)`.  For `:hcp` the
+supercell is replicated from the (non-cubic) primitive cell, since a cubic HCP
+cell is undefined; note the in-plane spacing `a` is the tight direction there.
+"""
+function bulk_prim_super(element::Symbol; a=nothing, c=nothing, N_cell::Int=3,
+                         structure::Union{Nothing,Symbol}=nothing)
+    symm = something(structure, AtomsBuilder.Chemistry.symmetry(element))
+    akw = isnothing(a) ? NamedTuple() : (a = a * u"Å",)
+    ckw = isnothing(c) ? NamedTuple() : (c = c * u"Å",)
+    if symm == :hcp
+        sys_prim  = bulk(element; akw..., ckw...)
+        sys_super = bulk(element; akw..., ckw...) * (N_cell, N_cell, N_cell)
+    else
+        sys_prim  = bulk(element; akw...)
+        sys_super = bulk(element; akw..., cubic=true) * (N_cell, N_cell, N_cell)
+    end
+    return sys_prim, sys_super
+end
+
 #
 #  Eigenvalues sorted by magnitude can jump between physically distinct branches
 #  whenever two bands are nearly degenerate (e.g. the two TA branches along
@@ -379,8 +495,13 @@ end
 Compute phonon frequencies along a standard high-symmetry path.
 
 `structure` selects the Brillouin-zone path:
-  - `:fcc` (default) — Γ→X→U→L→Γ→K  (FCC primitive cell)
+  - `:fcc` (default) — Γ→X→U→L→Γ→K  (FCC primitive cell, e.g. Al)
+  - `:diamond`       — Γ→X→U→L→Γ→K  (diamond = FCC reciprocal lattice, e.g. Si)
   - `:bcc`           — Γ→H→N→Γ→P→H  (BCC primitive cell, e.g. W)
+  - `:hcp`           — Γ→M→K→Γ→A→L→H→A  (hexagonal primitive cell, e.g. Mg)
+
+For multi-atom bases (`:diamond`, `:hcp`) there are 3·Np branches (Np=2), so
+optical branches appear above the three acoustic ones.
 
 Eigenvalues are tracked across q-points to produce smooth, non-crossing bands.
 
@@ -393,14 +514,17 @@ function compute_phonon_bands(sys_prim, sys_super, model;
     print("  Precomputing force constants (Hessian of supercell) …")
     fc_data = precompute_force_constants(sys_prim, sys_super, model)
     println(" done.")
-    if structure == :fcc
+    if structure in (:fcc, :diamond)   # diamond shares the FCC reciprocal lattice / BZ
         q_list, x_vals, x_ticks, labels, seg_starts = fcc_band_path(fc_data.L; N_per_seg)
         path_str = "Γ→X→U→L→Γ→K"
     elseif structure == :bcc
         q_list, x_vals, x_ticks, labels, seg_starts = bcc_band_path(fc_data.L; N_per_seg)
         path_str = "Γ→H→N→Γ→P→H"
+    elseif structure == :hcp
+        q_list, x_vals, x_ticks, labels, seg_starts = hcp_band_path(fc_data.L; N_per_seg)
+        path_str = "Γ→M→K→Γ→A→L→H→A"
     else
-        throw(ArgumentError("Unknown structure `$structure`. Use :fcc or :bcc."))
+        throw(ArgumentError("Unknown structure `$structure`. Use :fcc, :diamond, :bcc, or :hcp."))
     end
     Np     = length(sys_prim)
     Ntotal = 3 * Np

@@ -17,7 +17,15 @@ using AtomsBuilder
 using ExtXYZ, AtomsCalculators
 import AtomsCalculators: forces
 import AtomsCalculatorsUtilities.SitePotentials: PairList, get_neighbours, cutoff_radius
-import ACEWorkflow: precompute_force_constants, dynamical_matrix_from_fc, fcc_band_path
+import ACEWorkflow: precompute_force_constants, dynamical_matrix_from_fc
+import ACEWorkflow: fcc_band_path, bcc_band_path, hcp_band_path, bulk_prim_super
+
+# pick the high-symmetry path from the crystal structure (diamond shares the FCC BZ)
+_band_path(structure, L; N_per_seg) =
+    structure in (:fcc, :diamond) ? fcc_band_path(L; N_per_seg) :
+    structure == :bcc             ? bcc_band_path(L; N_per_seg) :
+    structure == :hcp             ? hcp_band_path(L; N_per_seg) :
+    error("unknown structure $structure — use :fcc/:diamond/:bcc/:hcp")
 
 # ── Undotted per-basis Hessian (parallel over atoms) ─────────────────────────
 function _site_basis_hessian(model, Rs, Zs, z0, ps, st)
@@ -63,7 +71,7 @@ function undotted_Hbasis(result, model, element, a, N_cell; tag="")
             if abs(c.a_eq - a) < 1e-4; println("  loaded H_basis cache $(basename(cand))"); return c.H_basis; end
         end
     end
-    sys = bulk(element; a=a*u"Å", cubic=true) * (N_cell, N_cell, N_cell)
+    _, sys = bulk_prim_super(element; a=a, N_cell=N_cell)   # structure auto-detected (fcc/bcc/diamond/hcp)
     @printf("  building undotted H_basis at a=%.5f (%d atoms, %d threads) …\n", a, length(sys), Threads.nthreads())
     t = @elapsed Hb = undotted_hessian(sys, model)
     @printf("    done in %.1f min\n", t/60)
@@ -72,12 +80,13 @@ end
 
 # band-path per-basis D_k(q) over the FULL path (Γ INCLUDED — for plotting AND checks)
 function bandpath_Dk(result, model, element, a, N_cell; N_per_seg=20, tag="")
-    sys_prim = bulk(element; a=a*u"Å"); sys_super = bulk(element; a=a*u"Å", cubic=true) * (N_cell, N_cell, N_cell)
+    sys_prim, sys_super = bulk_prim_super(element; a=a, N_cell=N_cell)   # fcc/bcc/diamond/hcp auto-detected
     ACEpotentials.Models.set_linear_parameters!(model, result.lin_params)
     fc0 = precompute_force_constants(sys_prim, sys_super, model); Np = fc0.Np; N3 = 3*length(sys_super)
     Hb = undotted_Hbasis(result, model, element, a, N_cell; tag=tag)
     n_params = length(result.lin_params)
-    q_list, x_vals, x_ticks, labels, _ = fcc_band_path(fc0.L; N_per_seg=N_per_seg)
+    structure = AtomsBuilder.Chemistry.symmetry(element)
+    q_list, x_vals, x_ticks, labels, _ = _band_path(structure, fc0.L; N_per_seg=N_per_seg)
     Bq = Vector{Matrix{ComplexF64}}(undef, length(q_list))
     for (iq, q) in enumerate(q_list)
         M = Matrix{ComplexF64}(undef, (3Np)^2, n_params)
