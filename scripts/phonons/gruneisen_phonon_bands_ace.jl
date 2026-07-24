@@ -1,232 +1,20 @@
-using LinearAlgebra, Statistics, DelimitedFiles, Printf
-using SparseArrays, StaticArrays
-using Test
-using ACEpotentials, ForwardDiff, Unitful, ACEWorkflow
-using OSQP
-
-element    = :Al
-
-# ── Load model ────────────────────────────────────────────────────────────────
-result     = load_model(element, 14, 4, 6, 2; dataset_name="subset_20_percent")
-model      = result.model
-A          = result.A
-Y          = result.Y
-P          = result.P
-W          = result.W
-lin_params = result.lin_params
-
-Ap = Diagonal(W) * A / P
-Yw = W .* Y
-
-# ── Equilibrium lattice constant and Hessian basis ────────────────────────────
-println("Relaxing equilibrium lattice constant ...")
-a_eq = ACEWorkflow.relax_lattice_constant(model, element)
-@printf("a_eq = %.6f Å\n", a_eq)
-
-println("Computing strain Hessian basis at a_eq ...")
-C, H_eq, _ = ACEWorkflow.Elasticity.strain_hessian_GPa(model, element; a=a_eq)
-
-# ── Lattice basis derivative for equilibrium constraint ───────────────────────
-function lattice_basis(a_val)
-    sys = ACEWorkflow.Elasticity.reference_system(element; a=a_val)
-    ustrip.(u"eV", ACEpotentials.Models.potential_energy_basis(sys, model))
-end
-
-println("Computing b′ ...")
-b_prime = ForwardDiff.derivative(lattice_basis, a_eq)
-
-println("Computing b″ ...")
-b_double_prime = ForwardDiff.derivative(a -> ForwardDiff.derivative(lattice_basis, a), a_eq)
-
-# ── Constrained ridge regression ──────────────────────────────────────────────
-function constrained_ridge_regression(X_train, Y_train, Gamma, constraint_matrix, constraint_bounds; lambda = 1.0 / size(X_train, 1))
-    H = (X_train' * X_train .+ (lambda .* Gamma' * Gamma))
-    b = - X_train' * Y_train
-    osqp_model = OSQP.Model()
-    OSQP.setup!(osqp_model; P=sparse(H), q=b, A=sparse(constraint_matrix / Gamma), l=constraint_bounds[1], u=constraint_bounds[2],
-                max_iter=5_000_000_000, check_termination=1_000, verbose=true, eps_abs=1e-4, eps_rel=1e-4)
-    results = OSQP.solve!(osqp_model)
-    return Gamma \ results.x
-end
-
-# ── Constraint vectors ────────────────────────────────────────────────────────
-constraint_1 = H_eq[1,1,:]
-C11_lower    = dot(constraint_1, lin_params)
-C11_upper    = dot(constraint_1, lin_params)
-
-constraint_2 = H_eq[1,2,:]
-C12_lower    = dot(constraint_2, lin_params)
-C12_upper    = dot(constraint_2, lin_params)
-
-constraint_4 = H_eq[4,4,:]
-C44_lower    = 0.1#dot(constraint_4, lin_params)
-C44_upper    = Inf#dot(constraint_4, lin_params)
-
-# L    = SMatrix{3,3,Float64}(ustrip.(ACEWorkflow.Elasticity.lattice_matrix(ACEWorkflow.Elasticity.reference_system(element; a=a_eq).cell.cell_vectors)))
-# V    = abs(det(L))
-# conversion_factor = 160.21766208 / V
-
-# constraint_11 = H_eq[1,1,:]
-# C11_lower     = 116.3 / conversion_factor
-# C11_upper     = 116.3 / conversion_factor
-
-# constraint_12 = H_eq[1,2,:]
-# C12_lower     = 64.8  / conversion_factor
-# C12_upper     = 64.8  / conversion_factor
-
-# constraint_44 = H_eq[4,4,:]
-# C44_lower     = 30.9  / conversion_factor
-# C44_upper     = 30.9  / conversion_factor
-
-# Born stability: C11 + 2*C12 > 0
-C11_plus_2C12_constraint = constraint_1 .+ 2 .* constraint_2
-C11_plus_2C12_lower      = 0.1
-C11_plus_2C12_upper      = Inf
-
-C12_less_than_C11_constraint = constraint_1 .- constraint_2
-C12_less_than_C11_lower      = 1.0
-C12_less_than_C11_upper      = Inf
-
-# Lattice constant constraint: b′(a_eq) · θ = 0
-# Ensures the correction δθ does not shift the equilibrium lattice constant.
-# b_prime must be precomputed via del_lattice_constant_design or ForwardDiff on lattice_basis.
-# The RHS is -b_prime · lin_params ≈ 0 (nominal is already at equilibrium).
-lattice_eq_constraint = b_prime                          # n_params-vector
-lattice_eq_rhs        = -dot(b_prime, lin_params)        # ≈ 0
-lattice_eq_lower      = 0.0
-lattice_eq_upper      = 0.0
-
-# Lattice curvature constraint: b″(a_eq) · θ > 0
-# E(a) ≈ E(a_eq) + ½·(b″·θ)·(a-a_eq)² + ... near equilibrium, so this is
-# exactly the condition that a_eq is a minimum (not a maximum/saddle) of
-# E(a) — equivalent to requiring the bulk modulus B = (C11+2C12)/3 > 0.
-# Bounded away from 0 (not just > 0) for the same numerical-safety reason
-# as the other strict-inequality Born constraints above.
-lattice_curvature_constraint = b_double_prime            # n_params-vector
-lattice_curvature_lower      = 1e-9
-lattice_curvature_upper      = Inf
-
-all_constraints = vcat(constraint_1',
-                       constraint_4',
-                       C12_less_than_C11_constraint',
-                       C11_plus_2C12_constraint',
-                       lattice_eq_constraint',
-                       lattice_curvature_constraint')
-lower_bounds    = [C11_lower, C44_lower,
-                   C12_less_than_C11_lower, C11_plus_2C12_lower,
-                   lattice_eq_lower, lattice_curvature_lower]
-upper_bounds    = [C11_upper, C44_upper,
-                   C12_less_than_C11_upper, C11_plus_2C12_upper,
-                   lattice_eq_upper, lattice_curvature_upper]
-# all_constraints = vcat(constraint_4')
-# lower_bounds    = [C44_lower]
-# upper_bounds    = [C44_upper]
-
-constraints = (lower_bounds, upper_bounds)
-
-constrained_ridge_teta = constrained_ridge_regression(Ap, Yw, P, all_constraints, constraints)
-
-using OSQP, ACEWorkflow
-
-function constrained_pops(X_train, Y_train, Gamma, constraint_matrix, constraint_bounds; members_to_constrain=1:length(Y_train))
-    constrained_pops_parameters = zeros(length(members_to_constrain), size(X_train, 2))
-    H = (X_train' * X_train .+ (1.0 / (size(X_train, 1)) .* Gamma' * Gamma))
-    b = - X_train' * Y_train
-
-    model = OSQP.Model()
-
-    for idx in 1:length(members_to_constrain)
-        i = members_to_constrain[idx]
-        A_full = vcat(X_train[i,:]', constraint_matrix)
-        l_full = vcat([Y_train[i]], constraint_bounds[1])
-        u_full = vcat([Y_train[i]], constraint_bounds[2])
-        A_sparse = sparse(A_full / Gamma)
-
-        OSQP.setup!(model; P=sparse(H), q=b, A=A_sparse, l=l_full, u=u_full,
-                    max_iter=500_000, check_termination=10, verbose=false, eps_abs=5e-4, eps_rel=5e-4)
-
-        if (mod(idx, 100) == 0)
-            println(idx)
-        end
-        results = OSQP.solve!(model)
-        constrained_pops_parameters[idx,:] = Gamma \ results.x
-    end
-    return constrained_pops_parameters
-end
-
-constrained_pops_delta = constrained_pops(Ap, Yw, P, all_constraints, constraints)
-# using Random
-# random_selections = rand(1:size(constrained_pops_delta, 1), 10)
-# sub_samples = constrained_pops_delta[random_selections, :]
-pops_eig, pops_bound = hypercube(constrained_pops_delta; percentile_clipping=0.4)
-
-pops_samples, _ = sample_hypercube(pops_eig, pops_bound, zeros(length(constrained_ridge_teta)))
-writedlm("$(result.dir)/constrained_pops_samples.csv", pops_samples, ',')
-pops_samples    = [pops_samples[:,i] for i=1:size(pops_samples,2)]
-
-ACEpotentials.Models.set_linear_parameters!(model, constrained_ridge_teta)
-a_eq = ACEWorkflow.relax_lattice_constant(model, element)
-
-# ── eV → GPa conversion ───────────────────────────────────────────────────────
-sys0      = ACEWorkflow.Elasticity.reference_system(element; a=a_eq)
-L0        = SMatrix{3,3,Float64}(ustrip.(ACEWorkflow.Elasticity.lattice_matrix(sys0.cell.cell_vectors)))
-V         = abs(det(L0))
-eV_to_GPa = 160.2176621 / V
-
-# ── Elastic constants from constrained solution ───────────────────────────────
-C11_c = dot(H_eq[1,1,:], constrained_ridge_teta) * eV_to_GPa
-C12_c = dot(H_eq[1,2,:], constrained_ridge_teta) * eV_to_GPa
-C44_c = dot(H_eq[4,4,:], constrained_ridge_teta) * eV_to_GPa
-
-C11_nom = C11_lower * eV_to_GPa   # nominal (from lin_params)
-C12_nom = C12_lower * eV_to_GPa
-C44_nom = dot(constraint_4, lin_params) * eV_to_GPa
-
-println()
-println("── Elastic constants ───────────────────────────────────────")
-@printf("           %10s  %10s\n", "nominal", "constrained")
-@printf("  C11  =   %8.3f    %8.3f  GPa\n", C11_nom, C11_c)
-@printf("  C12  =   %8.3f    %8.3f  GPa\n", C12_nom, C12_c)
-@printf("  C44  =   %8.3f    %8.3f  GPa\n", C44_nom, C44_c)
-@printf("  C11-C12  = %8.3f  GPa  (Born: must be > 0)\n", C11_c - C12_c)
-@printf("  C11+2C12 = %8.3f  GPa  (Born: must be > 0)\n", C11_c + 2*C12_c)
-
-println()
-println("── Constraint checks ───────────────────────────────────────")
-
-# 1. C11 equality
-@printf("  C11 equality:          |Δ| = %.3e GPa", abs(C11_c - C11_nom))
-@test abs(C11_c - C11_nom) < 0.1
-println(abs(C11_c - C11_nom) < 0.1 ? "  ✓" : "  ✗")
-
-# # 2. C44 equality
-# @printf("  C44 equality:          |Δ| = %.3e GPa", abs(C44_c - C44_nom))
-# @test abs(C44_c - C44_nom) < 0.1
-# println(abs(C44_c - C44_nom) < 0.1 ? "  ✓" : "  ✗")
-
-# 3. Born: C11 > C12
-@printf("  Born C11 - C12:        %.3f GPa", C11_c - C12_c)
-@test C11_c - C12_c > 0
-println(C11_c - C12_c > 0 ? "  ✓" : "  ✗")
-
-# 4. Born: C11 + 2*C12 > 0
-@printf("  Born C11 + 2*C12:      %.3f GPa", C11_c + 2*C12_c)
-@test C11_c + 2*C12_c > 0
-println(C11_c + 2*C12_c > 0 ? "  ✓" : "  ✗")
-
-# 5. Lattice constant: b′·c = 0  (constraint enforces (b_prime/P)·θ = b_prime·c = 0)
-lattice_residual = dot(b_prime, constrained_ridge_teta)
-@printf("  Lattice b′·c:          %.3e eV/Å", lattice_residual)
-@test abs(lattice_residual) < 1e-4
-println(abs(lattice_residual) < 1e-4 ? "  ✓" : "  ✗")
-
-# 6. Lattice curvature: b″·c > 0  (a_eq is a minimum, not a maximum, of E(a))
-lattice_curvature = dot(b_double_prime, constrained_ridge_teta)
-@printf("  Lattice b″·c (curvature): %.3e eV/Å²", lattice_curvature)
-@test lattice_curvature > 0
-println(lattice_curvature > 0 ? "  ✓" : "  ✗")
-
-# ACEpotentials.save_model(model, "$(result.dir)/constrained_model.json")
+# phonon_bands_ace.jl
+#
+# Phonon band structure from an ACE potential, plotted as scatter points
+# (one dot per eigenvalue at each q-point, no interpolation).
+#
+# Dynamical-matrix convention mirrors DFTK.jl/phonon.jl:
+#   ω = sign(ω²) · √|ω²|   →  negative frequency = imaginary (unstable) mode
+#
+# Units: THz   (converted from the natural eV/Å²/amu eigenvalue units)
+#
+# Default system: bulk(:Al, cubic=true)  — 4-atom conventional FCC cell, 12 branches.
+# For converged force constants swap in a supercell, e.g.
+#   sys = bulk(:Al, cubic=true) * (3,3,3)   → 108 atoms, 324 branches (zone-folded)
+#
+# Usage (assumes `model` is already loaded in the session):
+#   model, _ = ACEpotentials.load_model("../../models/Al_20_4_6A_3/Al_20_4_6A_3.json")
+#   include("phonon_bands_ace.jl")
 
 using StaticArrays, LinearAlgebra, AtomsBuilder
 using AtomsCalculators, Unitful, AtomsBase
@@ -735,6 +523,117 @@ using ACEWorkflow
 using LinearAlgebra, ACEpotentials
 import ACEWorkflow: phonon_committee  
 
+# ── Load model (adjust path as needed) ──────────────────────────────────────
+result = load_model(:Al, 12, 4, 6, 2; dataset_name="subset_20_percent")
+model  = result.model
+
+# ── System ───────────────────────────────────────────────────────────────────
+# Primitive cell: 1-atom FCC primitive cell — the D(q) matrix is 3×3, giving
+# the 3 acoustic branches of the FCC crystal with no zone-folding artifacts.
+# Using the conventional 4-atom cell here would make X ≡ Γ (a reciprocal
+# lattice vector of the conventional cell), producing a flat-looking dispersion.
+#
+# Supercell: 3×3×3 conventional cell (∼12.15 Å sides) — must be ≥ 2× the ACE
+# cutoff (6 Å) so that Φ(i, j+R) decays to zero before the boundary.
+function phonon_strain(model, element)
+    N         = 4
+    a_eq      = ACEWorkflow.relax_lattice_constant(model, element)
+    freqs_all = []
+    for mult in [0.99, 1.0, 1.01]
+        sys_prim  = bulk(element; a=mult*a_eq*u"Å")                         # 1 atom, 3 branches
+        sys_super = bulk(element; a=mult*a_eq*u"Å", cubic=true) * (N,N,N)   # 256 atoms, Hessian source
+
+        println("\n=== Phonon band structure (ACE) ===")
+        x_vals, freqs, x_ticks, labels = compute_phonon_bands(sys_prim, sys_super, model, a_eq;
+                                                            N_per_seg=30, n_modes=nothing)
+        push!(freqs_all, freqs)
+    end
+    return freqs_all
+end
+scales = [0.99, 1.00, 1.01]   # V- , V0, V+  (linear scale factors -> V scale^3)
+freqs_all = phonon_strain(model, :Al)
+
+V0 = a_eq^3
+Vm, Vp = (0.99*a_eq)^3, (1.01*a_eq)^3
+volumes = [Vm, V0, Vp]
+const ħ = 1.054571817e-34
+const kB = 1.380649e-23
+function bulk_gruneisen(ωm, ω0, ωp, Vm, V0, Vp, T; omega_cutoff=1e10)
+    @assert size(ωm) == size(ω0) == size(ωp) "frequency arrays must match in shape"
+
+    valid = ω0 .> omega_cutoff   # boolean mask, same shape, drops acoustic-at-Γ etc.
+
+    γ = zeros(size(ω0))
+    γ[valid] = -(V0 ./ ω0[valid]) .* (ωp[valid] .- ωm[valid]) ./ (Vp - Vm)
+
+    x    = ħ .* ω0[valid] ./ (kB * T)
+    expx = exp.(x)
+    Cv   = kB .* x.^2 .* expx ./ (expx .- 1).^2
+
+    return sum(Cv .* γ[valid]) / sum(Cv)
+end
+ωm = freqs_all[1] .* 2π .* 1e12
+ω0 = freqs_all[2] .* 2π .* 1e12
+ωp = freqs_all[3] .* 2π .* 1e12
+
+bulk_grun = bulk_gruneisen(ωm, ω0, ωp, volumes, 300; omega_cutoff=1e10)
+using ACEpotentials
+model, _ = ACEpotentials.load_model("$(result.dir)/exact_constrained_model.json")
+
+# ── System ───────────────────────────────────────────────────────────────────
+# Primitive cell: 1-atom FCC primitive cell — the D(q) matrix is 3×3, giving
+# the 3 acoustic branches of the FCC crystal with no zone-folding artifacts.
+# Using the conventional 4-atom cell here would make X ≡ Γ (a reciprocal
+# lattice vector of the conventional cell), producing a flat-looking dispersion.
+#
+# Supercell: 3×3×3 conventional cell (∼12.15 Å sides) — must be ≥ 2× the ACE
+# cutoff (6 Å) so that Φ(i, j+R) decays to zero before the boundary.
+
+N         = 5
+a_eq      = ACEWorkflow.relax_lattice_constant(con_model, :Al)
+sys_prim  = bulk(:Al; a=a_eq*u"Å")                         # 1 atom, 3 branches
+sys_super = bulk(:Al; a=a_eq*u"Å", cubic=true) * (N,N,N)   # 256 atoms, Hessian source
+
+println("\n=== Phonon band structure (ACE) ===")
+x_vals, freqs, x_ticks, labels = compute_phonon_bands(sys_prim, sys_super, con_model, a_eq;
+                                                      N_per_seg=30, n_modes=nothing)
+
+ω_min = round(minimum(freqs), sigdigits=4)
+ω_max = round(maximum(freqs), sigdigits=4)
+n_imag = count(freqs .< 0)
+println("  Frequency range : $ω_min … $ω_max THz")
+n_imag > 0 && println("  Imaginary modes : $n_imag (shown in red)")
+
+fig = plot_phonon_bands(x_vals, freqs, x_ticks, labels
+                         )
+save("$(result.dir)/results/exact_constrained_mean_phonon_bands_ace_sample_scatter_$(N)x$(N)x$(N).png", fig)
+display(fig)
+# println("  Saved: phonon_bands_ace_scatter.png")
+
+# fig_e = plot_phonon_energy(x_vals, freqs, x_ticks, labels;
+#                             title     = "Al phonon bands — ACE",
+#                             linewidth = 1.5)
+# save("$(result.dir)/results/phonon_energy_ace_$(N)x$(N)x$(N).png", fig_e)
+# display(fig_e)
+# println("  Saved: phonon_energy_ace.png")
+# writedlm("$(result.dir)/results/phonon_energy_ace_$(N)x$(N)x$(N).csv", freqs .* (THz_to_meV / 1000), ',')
+# writedlm("$(result.dir)/results/phonon_x_vals_ace_$(N)x$(N)x$(N).csv", x_vals, ',')
+
+
+
+"""
+    phonon_committee(model, coeffs_committee, result; N_per_seg=30)
+
+Compute phonon bands for the mean model (i=0) and each committee member,
+returning `(x_vals, all_freqs, x_ticks, labels)` where `all_freqs` is a
+`Vector` of `Nmodes × Nq` matrices (index 1 = mean model, 2..N+1 = committee).
+
+Also saves two overlay plots to `result.dir/results/`:
+  - `phonon_committee_THz.png`  — frequency (THz)
+  - `phonon_committee_eV.png`   — energy (eV), 0.01 eV tick spacing
+
+Committee members are drawn in light grey; the mean model is drawn in blue/red.
+"""
 function phonon_committee(model, coeffs_committee, result; N_per_seg=30, N_cell=2, orig_coeffs=nothing)
     # Save original coefficients so we can restore them after the loop
     if (orig_coeffs == nothing)
@@ -843,207 +742,492 @@ function phonon_committee(model, coeffs_committee, result; N_per_seg=30, N_cell=
     return x_vals_out, all_freqs, x_ticks_out, labels_out
 end
 
-ACEpotentials.Models.set_linear_parameters!(model, constrained_ridge_teta); 
-x_vals_out, all_freqs, x_ticks_out, labels_out = phonon_committee(model, pops_samples, result; N_cell=4, orig_coeffs=constrained_ridge_teta)
+using Printf
+"""
+    born_stability_committee(model, coeffs_committee, result)
 
-ACEpotentials.Models.set_committee!(model, pops_samples)
+For the mean model (i=0) and each committee member, relax the lattice constant,
+compute the cubic elastic tensor C (GPa) via the strain-Hessian basis, and
+evaluate the three Born stability criteria for cubic crystals:
+  (i)   C11 − C12 > 0
+  (ii)  C11 + 2 C12 > 0
+  (iii) C44 > 0
 
-using ExtXYZ, AtomsCalculators
-import AtomsCalculators: forces
+Prints a summary table and returns `(; C_list, a_list, stable)` where
+`C_list[1]` is the mean model, `C_list[2:end]` are committee members.
+"""
+function born_stability_committee(model, coeffs_committee, result)
+    orig_coeffs = result.lin_params
+    N = length(coeffs_committee)
 
-testing_configs = ExtXYZ.load("data/Al/manual_df_test_Al.xyz")
-testing_configs = testing_configs[1:10:end]
+    C_list = Vector{Matrix{Float64}}(undef, N + 1)
+    a_list = Vector{Float64}(undef, N + 1)
+    stable = Vector{Bool}(undef, N + 1)
 
-predicted_test_energies = []
-test_energies = []
-predicted_test_forces = []
-test_forces = []
-predicted_test_energies_uncertainties = ([], [])
-predicted_test_forces_uncertainties = ([], [])
+    println("\n=== Born stability — ACE committee ===")
 
-for config in testing_configs
-    E, co_E = @committee potential_energy(config, model)
-    append!(predicted_test_energies, ustrip(E))
-    append!(predicted_test_energies_uncertainties[1], minimum(ustrip.(co_E)))
-    append!(predicted_test_energies_uncertainties[2], maximum(ustrip.(co_E)))
-    append!(test_energies, ustrip(config[:dft_energy]))
-    
-    if haskey(config[1], :dft_forces)
-        config_forces = [at[:dft_forces] for at in config]
-        F, co_F = @committee forces(config, model)
-        append!(test_forces, reduce(vcat, ustrip.(config_forces)))
-        append!(predicted_test_forces, reduce(vcat, ustrip.(F)))
-        for i in eachindex(co_F[1])
-            fi = reduce(hcat, ustrip(co_F[k][i]) for k in eachindex(co_F))  # 3×n_committee matrix
-            append!(predicted_test_forces_uncertainties[1], vec(minimum(fi; dims=2)))
-            append!(predicted_test_forces_uncertainties[2], vec(maximum(fi; dims=2)))
+    for i in 0:N
+        label = i == 0 ? "mean" : "member $i"
+        θ = i == 0 ? orig_coeffs : coeffs_committee[i]
+        if i > 0
+            ACEpotentials.Models.set_linear_parameters!(model, θ)
+        end
+
+        print("  [$label] relaxing … ")
+        a_i = ACEWorkflow.relax_lattice_constant(model, :Al)
+        @printf("a = %.6f Å\n", a_i)
+
+        # Volume from the same reference system that elastic_hessian_basis uses
+        sys0 = ACEWorkflow.Elasticity.reference_system(:Al; a=a_i)
+        L0   = SMatrix{3,3,Float64}(
+                   ustrip.(ACEWorkflow.Elasticity.lattice_matrix(sys0.cell.cell_vectors)))
+        V_i        = abs(det(L0))
+        eV_to_GPa  = 160.2176621 / V_i
+
+        H_i = ACEWorkflow.elastic_hessian_basis(model; element=:Al, a=a_i)
+        C_i = dropdims(sum(H_i .* reshape(θ, 1, 1, :); dims=3); dims=3) .* eV_to_GPa
+
+        C_list[i + 1] = C_i
+        a_list[i + 1] = a_i
+
+        C11, C12, C44 = C_i[1,1], C_i[1,2], C_i[4,4]
+        b1 = C11 - C12  > 0
+        b2 = C11 + 2C12 > 0
+        b3 = C44        > 0
+        stable[i + 1]  = b1 && b2 && b3
+
+        @printf("         C11=%7.2f  C12=%7.2f  C44=%7.2f  GPa\n", C11, C12, C44)
+        @printf("         (i) C11−C12=%+.2f  (ii) C11+2C12=%+.2f  (iii) C44=%+.2f  → %s\n",
+                C11-C12, C11+2C12, C44,
+                stable[i + 1] ? "STABLE" : "*** UNSTABLE ***")
+    end
+
+    # Restore mean model
+    ACEpotentials.Models.set_linear_parameters!(model, orig_coeffs)
+
+    # Summary table
+    println()
+    println(repeat('─', 72))
+    @printf("  %-12s  %8s  %8s  %8s  %8s  %s\n",
+            "Member", "a (Å)", "C11", "C12", "C44", "Born stable?")
+    println("  ", repeat('-', 68))
+    for i in 0:N
+        label = i == 0 ? "mean" : "member $i"
+        C = C_list[i + 1]
+        @printf("  %-12s  %8.5f  %8.2f  %8.2f  %8.2f  %s\n",
+                label, a_list[i + 1], C[1,1], C[1,2], C[4,4],
+                stable[i + 1] ? "✓" : "✗  UNSTABLE")
+    end
+    n_stable = count(stable)
+    println(repeat('─', 72))
+    @printf("  %d / %d members satisfy all Born stability criteria.\n",
+            n_stable, N + 1)
+    println(repeat('─', 72))
+
+    return (; C_list, a_list, stable)
+end
+
+"""
+    born_stability_mean(model, result)
+
+Check Born stability for the mean model only (no committee or forest).
+Relaxes the lattice constant once, computes the elastic tensor via the
+strain-Hessian basis, and prints the three cubic Born criteria.
+
+Returns `(; C, a_eq, stable)`.
+"""
+function born_stability_mean(model, θ)
+    println("\n=== Born stability — mean model ===")
+
+    print("  Relaxing … ")
+    a_eq = ACEWorkflow.relax_lattice_constant(model, :Al)
+    @printf("a_eq = %.6f Å\n", a_eq)
+
+    sys0 = ACEWorkflow.Elasticity.reference_system(:Al; a=a_eq)
+    L0   = SMatrix{3,3,Float64}(
+               ustrip.(ACEWorkflow.Elasticity.lattice_matrix(sys0.cell.cell_vectors)))
+    V0        = abs(det(L0))
+    eV_to_GPa = 160.2176621 / V0
+
+    H = ACEWorkflow.elastic_hessian_basis(model; element=:Al, a=a_eq)
+    C = dropdims(sum(H .* reshape(θ, 1, 1, :); dims=3); dims=3) .* eV_to_GPa
+
+    C11, C12, C44 = C[1,1], C[1,2], C[4,4]
+    b1 = C11 - C12  > 0
+    b2 = C11 + 2C12 > 0
+    b3 = C44        > 0
+    stable = b1 && b2 && b3
+
+    println(repeat('─', 60))
+    @printf("  C11 = %8.2f GPa\n", C11)
+    @printf("  C12 = %8.2f GPa\n", C12)
+    @printf("  C44 = %8.2f GPa\n", C44)
+    println(repeat('─', 60))
+    @printf("  (i)   C11 − C12   = %+.2f GPa  %s\n", C11-C12,     b1 ? "✓" : "✗")
+    @printf("  (ii)  C11 + 2C12  = %+.2f GPa  %s\n", C11+2C12,    b2 ? "✓" : "✗")
+    @printf("  (iii) C44         = %+.2f GPa  %s\n", C44,          b3 ? "✓" : "✗")
+    println(repeat('─', 60))
+    println("  Born stable? ", stable ? "YES ✓" : "NO ✗")
+    println(repeat('─', 60))
+
+    return (; C, a_eq, stable)
+end
+
+"""
+    born_stability_forest(model, forest_vecs, result; verbose=false)
+
+Fast Born stability check for a large set of POPS correction vectors (δθ).
+
+For each member the strain-Hessian basis is linearly updated to account for
+the shift in lattice constant implied by the correction, using a 2nd-order
+implicit-function-theorem (IFT) approximation:
+
+  δa ≈ δa₁ + δa₂
+    δa₁ = −(b′ · δθ) / K
+    δa₂ = −((b″ · δθ)·δa₁ + ½(θ_eq·b‴)·δa₁²) / K
+    K   = θ_eq · b″
+
+  H(a_eq + δa) ≈ H(a_eq) + δa · (dH/da)|_{a_eq}
+
+All three IFT inputs (b′, b″, b‴, dH/da) are precomputed once; per-member
+cost is two dot products + a rank-1 matrix update, keeping the forest sweep fast.
+
+The procedure:
+  1. Relax once at the mean model to get `a_eq`.
+  2. Precompute the 6×6 strain-Hessian basis H and its lattice derivative dH/da.
+  3. Precompute b′, b″, b‴ (ForwardDiff) and K = θ_eq·b″.
+  4. For each δθ, compute δa (2nd-order IFT), form H_approx = H + δa·(dH/da),
+     contract with θ = θ_eq + δθ, and check the cubic Born criteria.
+
+Returns `(; stable, C11, C12, C44)` where each is a length-N vector.
+"""
+function born_stability_forest(model, forest_vecs, result; verbose=false)
+    N = length(forest_vecs)
+    println("\n=== Born stability — POPS delta forest (N=$N) ===")
+
+    # ── Step 1: relax once at the mean model ────────────────────────────────
+    print("  Relaxing mean model … ")
+    a_eq = ACEWorkflow.relax_lattice_constant(model, :Al)
+    @printf("a_eq = %.6f Å\n", a_eq)
+
+    # ── Step 2: precompute strain-Hessian basis and its lattice derivative ───
+    print("  Precomputing strain-Hessian basis … ")
+    H_basis = ACEWorkflow.elastic_hessian_basis(model; element=:Al, a=a_eq)  # 6×6×Nbasis
+
+    sys0 = ACEWorkflow.Elasticity.reference_system(:Al; a=a_eq)
+    L0   = SMatrix{3,3,Float64}(
+               ustrip.(ACEWorkflow.Elasticity.lattice_matrix(sys0.cell.cell_vectors)))
+    V0        = abs(det(L0))
+    eV_to_GPa = 160.2176621 / V0
+    println("done.  V = $(round(V0, sigdigits=5)) Å³,  eV→GPa = $(round(eV_to_GPa, sigdigits=6))")
+
+    print("  Precomputing dH/da … ")
+    dH_da_fn = ACEWorkflow.Elasticity.strain_hessian_lattice_constant_derivative_ad(model, :Al; a=a_eq)
+    dH_da    = dH_da_fn(a_eq)
+    println("done.")
+
+    # ── Step 3: IFT ingredients — b′, b″, b‴ at a_eq ───────────────────────
+    print("  Precomputing b′, b″, b‴ for IFT lattice update … ")
+    function _lattice_basis(a_val)
+        sys = ACEWorkflow.Elasticity.reference_system(:Al; a=a_val)
+        ustrip.(u"eV", ACEpotentials.Models.potential_energy_basis(sys, model))
+    end
+    b_prime        = ForwardDiff.derivative(_lattice_basis, a_eq)
+    b_double_prime = ForwardDiff.derivative(
+                         a -> ForwardDiff.derivative(_lattice_basis, a), a_eq)
+    b_triple_prime = ForwardDiff.derivative(
+                         a -> ForwardDiff.derivative(
+                             a2 -> ForwardDiff.derivative(_lattice_basis, a2), a), a_eq)
+    θ_mean          = result.lin_params
+    K               = dot(θ_mean, b_double_prime)
+    scalar_b_triple = dot(θ_mean, b_triple_prime)
+    println("done.  K = $(round(K, sigdigits=5)) eV/Å²")
+
+    # Mean model check
+    C_mean = dropdims(sum(H_basis .* reshape(θ_mean, 1, 1, :); dims=3); dims=3) .* eV_to_GPa
+    @printf("  Mean model:  C11=%7.2f  C12=%7.2f  C44=%7.2f  GPa\n",
+            C_mean[1,1], C_mean[1,2], C_mean[4,4])
+
+    # ── Step 4: check each forest member ─────────────────────────────────────
+    C11_vec = Vector{Float64}(undef, N)
+    C12_vec = Vector{Float64}(undef, N)
+    C44_vec = Vector{Float64}(undef, N)
+    stable  = Vector{Bool}(undef, N)
+
+    for (k, δθ) in enumerate(forest_vecs)
+        k % 1000 == 0 && print("\r  Checking member $k / $N …")
+
+        # 2nd-order IFT lattice-constant shift
+        δa_1 = -dot(b_prime, δθ) / K
+        δa_2 = -(dot(b_double_prime, δθ) * δa_1 + 0.5 * scalar_b_triple * δa_1^2) / K
+        δa   = δa_1 + δa_2
+
+        # Linearly updated Hessian basis and full parameter vector
+        H    = H_basis .+ δa .* dH_da
+        θ    = θ_mean .+ δθ
+
+        C = dropdims(sum(H .* reshape(θ, 1, 1, :); dims=3); dims=3) .* eV_to_GPa
+        C11_vec[k] = C[1,1]
+        C12_vec[k] = C[1,2]
+        C44_vec[k] = C[4,4]
+        stable[k]  = (C[1,1] - C[1,2] > 0) && (C[1,1] + 2C[1,2] > 0) && (C[4,4] > 0)
+        if verbose && !stable[k]
+            @printf("\n  *** UNSTABLE member %d:  C11=%7.2f  C12=%7.2f  C44=%7.2f\n",
+                    k, C[1,1], C[1,2], C[4,4])
         end
     end
+    println("\r  Done. ($N members checked)              ")
+
+    n_stable   = count(stable)
+    n_unstable = N - n_stable
+    println(repeat('─', 60))
+    @printf("  Stable   : %d / %d  (%.2f%%)\n", n_stable,   N, 100n_stable/N)
+    @printf("  Unstable : %d / %d  (%.2f%%)\n", n_unstable, N, 100n_unstable/N)
+    println(repeat('─', 60))
+
+    # Distribution summary
+    @printf("  C11  range: [%.2f, %.2f] GPa  (mean=%.2f)\n",
+            minimum(C11_vec), maximum(C11_vec), sum(C11_vec)/N)
+    @printf("  C12  range: [%.2f, %.2f] GPa  (mean=%.2f)\n",
+            minimum(C12_vec), maximum(C12_vec), sum(C12_vec)/N)
+    @printf("  C44  range: [%.2f, %.2f] GPa  (mean=%.2f)\n",
+            minimum(C44_vec), maximum(C44_vec), sum(C44_vec)/N)
+    dC = C11_vec .- C12_vec
+    @printf("  C11−C12 range: [%.2f, %.2f] GPa  (min margin=%.2f)\n",
+            minimum(dC), maximum(dC), minimum(dC))
+    bmod = (C11_vec .+ 2 .* C12_vec)
+    @printf("  C11+2C12 range: [%.2f, %.2f] GPa  (min margin=%.2f)\n",
+            minimum(bmod), maximum(bmod), minimum(bmod))
+    println(repeat('─', 60))
+
+    return (; stable, C11=C11_vec, C12=C12_vec, C44=C44_vec)
 end
 
-# ── Parity plot: Energies ─────────────────────────────────────────────────────
-let
-    e_true = Float64.(test_energies)
-    e_pred = Float64.(predicted_test_energies)
-    e_lo   = Float64.(predicted_test_energies_uncertainties[1])
-    e_hi   = Float64.(predicted_test_energies_uncertainties[2])
+"""
+    phonon_xpoint_stability_forest(model, forest_vecs, result; verbose=false, N_conv=3)
 
-    e_rmse = sqrt(mean((e_pred .- e_true).^2))
+Fast phonon stability check at the X-point of the FCC Brillouin zone for a
+large POPS correction forest.
 
-    fig = Figure(size = (600, 600))
-    ax  = Axis(fig[1, 1];
-        xlabel = "DFT energy (eV)",
-        ylabel = "ACE energy (eV)",
-        title  = "Energy parity plot  (RMSE = $(round(e_rmse, sigdigits=3)) eV)",
-    )
+At the X-point every FCC crystal has exactly 3 phonon modes (1 LA + 2 TA),
+none of which are acoustic zeros.  A member is stable if all three frequencies
+are non-negative (positive real).
 
-    errorbars!(ax, e_true, e_pred, e_pred .- e_lo, e_hi .- e_pred;
-               whiskerwidth = 6, color = (:steelblue, 0.5))
-    scatter!(ax, e_true, e_pred; color = :steelblue, markersize = 8)
+Strategy (all expensive work done once, before the forest loop):
 
-    elims = extrema([e_true; e_pred])
-    lines!(ax, collect(elims), collect(elims); color = :black, linestyle = :dash)
+  1. Relax once at the mean model to get `a_eq`.
+  2. Build the primitive-cell dynamical-matrix basis at X:
+       D_basis_X[:,:,k] = D(X) when θ = eₖ (k-th unit vector).
+     Cost: n_params × one supercell Hessian + Bloch transform.
+  3. Compute dD/da|_{a_eq} via finite differences (2 extra supercell Hessians).
+  4. Precompute IFT ingredients b′, b″, b‴ and K = θ_eq · b″.
 
-    save("$(result.dir)/results/basic pops 40% percent clipping/energy_parity.png", fig)
-end
+  Per-member cost (forest loop):
+    - 2nd-order IFT δa: two dot-products.
+    - D(X) update: D_basis ⊗ (θ_mean + δθ) + δa · dD_da  (3×3 contraction).
+    - Diagonalise 3×3 Hermitian matrix.
 
-# ── Parity plot: Forces ───────────────────────────────────────────────────────
-if !isempty(test_forces)
-    let
-        f_true = Float64.(test_forces)
-        f_pred = Float64.(predicted_test_forces)
-        f_lo   = Float64.(predicted_test_forces_uncertainties[1])
-        f_hi   = Float64.(predicted_test_forces_uncertainties[2])
+Returns `(; stable, freqs_THz)` where `freqs_THz` is an `N × 3` matrix of
+X-point frequencies in THz for each member.
+"""
+function phonon_xpoint_stability_forest(model, forest_vecs, result;
+                                        verbose=false, N_conv=3)
+    N        = length(forest_vecs)
+    θ_mean   = result.lin_params
+    n_params = length(θ_mean)
+    println("\n=== Phonon X-point stability — POPS delta forest (N=$N) ===")
 
-        f_rmse = sqrt(mean((f_pred .- f_true).^2))
+    # ── Step 1: relax mean model ─────────────────────────────────────────────
+    print("  Relaxing mean model … ")
+    a_eq = ACEWorkflow.relax_lattice_constant(model, :Al)
+    @printf("a_eq = %.6f Å\n", a_eq)
 
-        fig = Figure(size = (600, 600))
-        ax  = Axis(fig[1, 1];
-            xlabel = "DFT force component (eV/Å)",
-            ylabel = "ACE force component (eV/Å)",
-            title  = "Force parity plot  (RMSE = $(round(f_rmse, sigdigits=3)) eV/Å)",
-        )
+    sys_prim  = bulk(:Al; a=a_eq*u"Å")
+    sys_super = bulk(:Al; a=a_eq*u"Å", cubic=true) * (N_conv, N_conv, N_conv)
 
-        errorbars!(ax, f_true, f_pred, f_pred .- f_lo, f_hi .- f_pred;
-                   whiskerwidth = 6, color = (:tomato, 0.4))
-        scatter!(ax, f_true, f_pred; color = :tomato, markersize = 5)
+    # X-point in Cartesian (Å⁻¹): [0, 2π/a, 0]
+    q_X = [0.0, 2π / a_eq, 0.0]
 
-        flims = extrema([f_true; f_pred])
-        lines!(ax, collect(flims), collect(flims); color = :black, linestyle = :dash)
+    # ── Step 2: D(X) basis ───────────────────────────────────────────────────
+    print("  Precomputing supercell geometry … ")
+    fc_mean = precompute_force_constants(sys_prim, sys_super, model)
+    D_mean  = dynamical_matrix_from_fc(fc_mean, q_X)
+    println("done.")
 
-        save("$(result.dir)/results/basic pops 40% percent clipping/force_parity.png", fig)
+    println("  Building D(X) basis ($n_params basis functions) …")
+    D_basis_X   = zeros(ComplexF64, 3, 3, n_params)
+    orig_params = copy(θ_mean)
+    e_k         = zeros(n_params)
+    for k in 1:n_params
+        k % 50 == 0 && print("\r    $k / $n_params …")
+        fill!(e_k, 0.0); e_k[k] = 1.0
+        ACEpotentials.Models.set_linear_parameters!(model, e_k)
+        H_k = ustrip.(hessian(sys_super, model))
+        D_basis_X[:, :, k] = dynamical_matrix_from_fc(merge(fc_mean, (; H=H_k)), q_X)
     end
+    ACEpotentials.Models.set_linear_parameters!(model, orig_params)
+    println("\r  D(X) basis done.                              ")
+
+    D_check = dropdims(sum(D_basis_X .* reshape(θ_mean, 1, 1, :); dims=3); dims=3)
+    @printf("  Basis reconstruction error: %.2e\n", norm(D_check - D_mean))
+
+    # ── Step 3: dD/da at X via central finite differences ───────────────────
+    print("  Computing dD/da (finite differences) … ")
+    ε_a   = 1e-4
+    fc_p  = precompute_force_constants(bulk(:Al; a=(a_eq+ε_a)*u"Å"),
+                                       bulk(:Al; a=(a_eq+ε_a)*u"Å", cubic=true) * (N_conv, N_conv, N_conv),
+                                       model)
+    fc_m  = precompute_force_constants(bulk(:Al; a=(a_eq-ε_a)*u"Å"),
+                                       bulk(:Al; a=(a_eq-ε_a)*u"Å", cubic=true) * (N_conv, N_conv, N_conv),
+                                       model)
+    dD_da = (dynamical_matrix_from_fc(fc_p, [0.0, 2π/(a_eq+ε_a), 0.0]) -
+             dynamical_matrix_from_fc(fc_m, [0.0, 2π/(a_eq-ε_a), 0.0])) / (2ε_a)
+    println("done.")
+
+    # ── Step 4: IFT ingredients ──────────────────────────────────────────────
+    print("  Precomputing b′, b″, b‴ for IFT lattice update … ")
+    function _lb_xpt(a_val)
+        sys = ACEWorkflow.Elasticity.reference_system(:Al; a=a_val)
+        ustrip.(u"eV", ACEpotentials.Models.potential_energy_basis(sys, model))
+    end
+    b_prime        = ForwardDiff.derivative(_lb_xpt, a_eq)
+    b_double_prime = ForwardDiff.derivative(a -> ForwardDiff.derivative(_lb_xpt, a), a_eq)
+    b_triple_prime = ForwardDiff.derivative(
+                         a -> ForwardDiff.derivative(
+                             a2 -> ForwardDiff.derivative(_lb_xpt, a2), a), a_eq)
+    K               = dot(θ_mean, b_double_prime)
+    scalar_b_triple = dot(θ_mean, b_triple_prime)
+    println("done.  K = $(round(K, sigdigits=5)) eV/Å²")
+
+    # Mean model X-point check
+    f_mean, _ = dq_eigensystem(Matrix{ComplexF64}(Hermitian((D_mean + D_mean') / 2)))
+    @printf("  Mean model X-pt freqs: [%.3f, %.3f, %.3f] THz\n",
+            f_mean[1], f_mean[2], f_mean[3])
+
+    # ── Step 5: forest sweep ─────────────────────────────────────────────────
+    stable    = Vector{Bool}(undef, N)
+    freqs_THz = Matrix{Float64}(undef, N, 3)
+
+    for (k, δθ) in enumerate(forest_vecs)
+        k % 1000 == 0 && print("\r  Checking member $k / $N …")
+
+        # 2nd-order IFT lattice-constant shift
+        δa_1 = -dot(b_prime, δθ) / K
+        δa_2 = -(dot(b_double_prime, δθ) * δa_1 + 0.5 * scalar_b_triple * δa_1^2) / K
+        δa   = δa_1 + δa_2
+
+        θ = θ_mean .+ δθ
+        D = dropdims(sum(D_basis_X .* reshape(θ, 1, 1, :); dims=3); dims=3) .+ δa .* dD_da
+        f, _ = dq_eigensystem(Matrix{ComplexF64}(Hermitian((D + D') / 2)))
+        freqs_THz[k, :] = f[1:3]
+        stable[k] = all(f[1:3] .>= 0)
+
+        if verbose && !stable[k]
+            @printf("\n  *** UNSTABLE member %d: X freqs = [%.3f, %.3f, %.3f] THz\n",
+                    k, f[1], f[2], f[3])
+        end
+    end
+    println("\r  Done. ($N members checked)              ")
+
+    n_stable   = count(stable)
+    n_unstable = N - n_stable
+    println(repeat('─', 60))
+    @printf("  Stable   : %d / %d  (%.2f%%)\n", n_stable,   N, 100n_stable/N)
+    @printf("  Unstable : %d / %d  (%.2f%%)\n", n_unstable, N, 100n_unstable/N)
+    println(repeat('─', 60))
+
+    for j in 1:3
+        col = freqs_THz[:, j]
+        @printf("  Mode %d range: [%.3f, %.3f] THz  (mean=%.3f)\n",
+                j, minimum(col), maximum(col), sum(col)/N)
+    end
+    println(repeat('─', 60))
+
+    return (; stable, freqs_THz)
 end
-using CairoMakie, StatsBase, Statistics
-using CairoMakie, StatsBase, Statistics
-using CairoMakie, StatsBase, Statistics
 
-function error_vs_uncertainty_histogram(true_vals, pred_vals, lo_vals, hi_vals;
-                                         label="Energy", nbins=60, save_path=nothing)
-    true_vals = Float64.(true_vals)
-    pred_vals = Float64.(pred_vals)
-    lo_vals   = Float64.(lo_vals)
-    hi_vals   = Float64.(hi_vals)
+# using DelimitedFiles
+# forest_mat  = readdlm("$(result.dir)/pops_corrections.csv", ',')
+# forest_vecs = [forest_mat[i, :] for i in 1:size(forest_mat, 1)]   # δθ corrections only
+# # committee_vecs = forest_vecs
+# # x_vals_out, all_freqs, _, _ = phonon_committee(model, committee_vecs, result; N_per_seg=30)
+# forest_result = born_stability_forest(model, forest_vecs, result)
+# println("\nAll stable? ", all(forest_result.stable))
 
-    errors = true_vals .- pred_vals
-    mae = mean(abs.(errors))
-    norm_errors = errors ./ mae
+# xpt_result = phonon_xpoint_stability_forest(model, forest_vecs, result)
+# println("\nAll X-point stable? ", all(xpt_result.stable))
 
-    lo_errors = (true_vals .- lo_vals) ./ mae
-    hi_errors = (true_vals .- hi_vals) ./ mae
-    bound_errors = vcat(lo_errors, hi_errors)
 
-    violated = (true_vals .< lo_vals) .| (true_vals .> hi_vals)
-    ev = mean(violated)
-    bias = mean(errors) / mae
 
-    fontsize_base = 13
-    set_theme!(
-        fontsize = fontsize_base,
-        Axis = (
-            xlabelsize = fontsize_base + 1,
-            ylabelsize = fontsize_base + 1,
-            xticklabelsize = fontsize_base - 1,
-            yticklabelsize = fontsize_base - 1,
-            titlesize = fontsize_base + 2,
-            xgridvisible = true,
-            ygridvisible = true,
-            xgridwidth = 0.6,
-            ygridwidth = 0.6,
-            spinewidth = 1.3,
-            xtickwidth = 1.3,
-            ytickwidth = 1.3,
-            xticksize = 5,
-            yticksize = 5,
-        ),
-        Legend = (
-            labelsize = fontsize_base - 2,
-            framewidth = 1.0,
-            padding = (6, 6, 6, 6),
-            patchsize = (14, 3),
-            rowgap = 2,
-        ),
-    )
 
-    fig = Figure(size = (4.2*72, 3.8*72), figure_padding = (6, 12, 6, 6))
-    ax = Axis(fig[2, 1];
-        xlabel = "Error / Loss MAE",
-        ylabel = "P(Error ∈ [x, x+dx])",
-        title  = "$label test error distribution",
-        yscale = log10,
-        xlabelfont = :bold,
-        ylabelfont = :bold,
-        titlefont = :bold,
-    )
 
-    lim = maximum(abs.(vcat(norm_errors, bound_errors)))
-    edges = range(-lim, lim; length = nbins + 1)
+using Serialization, Dates
 
-    h1 = fit(Histogram, norm_errors, edges)
-    d1 = h1.weights ./ (sum(h1.weights) * step(edges))
-    d1 = max.(d1, 1e-3)
-    l1 = stairs!(ax, edges[1:end-1], d1; step = :post, color = :black, linewidth = 2.0)
+# ---------------------------------------------------------------
+# Phonons at 3 strained volumes for whatever model is currently loaded
+# ---------------------------------------------------------------
+function phonon_strain(model, element, a_eq; δ=0.01, N=4, N_per_seg=30)
+    freqs_all = []
+    for mult in (1-δ, 1.0, 1+δ)
+        sys_prim  = bulk(element; a=mult*a_eq*u"Å")
+        sys_super = bulk(element; a=mult*a_eq*u"Å", cubic=true) * (N,N,N)
 
-    h2 = fit(Histogram, bound_errors, edges)
-    d2 = h2.weights ./ (sum(h2.weights) * step(edges))
-    d2 = max.(d2, 1e-3)
-    l2 = stairs!(ax, edges[1:end-1], d2; step = :post, color = :orange, linewidth = 2.0)
+        x_vals, freqs, x_ticks, labels = compute_phonon_bands(
+            sys_prim, sys_super, model, a_eq; N_per_seg=N_per_seg, n_modes=nothing)
+        push!(freqs_all, freqs)
+    end
+    return freqs_all
+end
 
-    ylims!(ax, 1e-3, maximum(vcat(d1, d2)) * 3)
+# ---------------------------------------------------------------
+# Sweep over a vector of ACE parameter vectors.
+#
+# `set_params!(model, θ)` is YOUR function that mutates/rebuilds the model
+# with parameter vector θ — plug in whatever you currently use, e.g.:
+#   set_params!(model, θ) = (model.c .= θ)                # if coeffs are `.c`
+#   set_params!(model, θ) = ACEpotentials.set_parameters!(model, θ)  # if that exists
+#   set_params!(model, θ) = (global model = rebuild_model(θ))        # if you rebuild
+# ---------------------------------------------------------------
+function gruneisen_param_sweep(model, element::Symbol, param_vectors::Vector;
+                                δ::Real=0.01, N::Int=4, N_per_seg::Int=30,
+                                T_range=50:50:800,
+                                outdir::String="gruneisen_param_sweep")
 
-    Legend(fig[1, 1],
-        [l1, l2],
-        ["Test error (bias $(round(bias*100, digits=0))%, EV $(round(ev*100, digits=1))%)",
-         "Committee bound error"];
-        orientation = :vertical,
-        framevisible = true,
-        tellwidth = false,
-        tellheight = true,
-        labelsize = fontsize_base - 3,
-    )
+    mkpath(outdir)
+    results = Dict{Int, NamedTuple}()
 
-    rowsize!(fig.layout, 1, Auto())  # legend row sized to its own content, no overflow
-    rowsize!(fig.layout, 2, Auto(4)) # plot gets most of the remaining height
+    for (idx, θ) in enumerate(param_vectors)
+        println("=== param set $idx / $(length(param_vectors)) ===")
 
-    if save_path !== nothing
-        save(save_path, fig; px_per_unit = 300/72)
+        ACEpotentials.Models.set_linear_parameters!(model, θ)                       # <-- your injection point
+        a_eq = ACEWorkflow.relax_lattice_constant(model, element)
+
+        freqs_all = phonon_strain(model, element, a_eq; δ=δ, N=N, N_per_seg=N_per_seg)
+
+        # --- save raw data for this parameter set ---
+        fname = joinpath(outdir, "freqs_$(element)_param$(idx).jls")
+        serialize(fname, (element=element, param_idx=idx, theta=θ,
+                           a_eq=a_eq, delta=δ, N=N,
+                           freqs_all=freqs_all, timestamp=now()))
+        println("  saved -> $fname")
+
+        # --- Grüneisen from this run ---
+        V0 = a_eq^3
+        Vm, Vp = ((1-δ)*a_eq)^3, ((1+δ)*a_eq)^3
+        volumes = [Vm, V0, Vp]
+
+        ωm = freqs_all[1] .* 2π .* 1e12
+        ω0 = freqs_all[2] .* 2π .* 1e12
+        ωp = freqs_all[3] .* 2π .* 1e12
+
+        γT = [bulk_gruneisen(ωm, ω0, ωp, volumes, T) for T in T_range]
+        results[idx] = (theta=θ, T=collect(T_range), gamma=γT,
+                         a_eq=a_eq, freqs_all=freqs_all)
     end
 
-    set_theme!()
-    return fig
-end
-# ── Energies ──
-error_vs_uncertainty_histogram(test_energies, predicted_test_energies,
-                                predicted_test_energies_uncertainties[1],
-                                predicted_test_energies_uncertainties[2];
-                                label = "Energy",
-                                save_path = "$(result.dir)/results/energy_error_vs_uncertainty.png")
+    summary_file = joinpath(outdir, "summary_$(element).jls")
+    serialize(summary_file, results)
+    println("\nsaved combined summary -> $summary_file")
 
-# ── Forces ──
-if !isempty(test_forces)
-    error_vs_uncertainty_histogram(test_forces, predicted_test_forces,
-                                    predicted_test_forces_uncertainties[1],
-                                    predicted_test_forces_uncertainties[2];
-                                    label = "Force",
-                                    save_path = "$(result.dir)/results/force_error_vs_uncertainty.png")
-end
+    return results
+end 

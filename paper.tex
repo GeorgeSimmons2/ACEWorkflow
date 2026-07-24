@@ -1,0 +1,210 @@
+% =========================================================================
+% Physics Informed Priors for MLIPs with UQ — MLST draft scaffold
+% -------------------------------------------------------------------------
+% NOTE: MLST (Machine Learning: Science and Technology) is an IOP journal.
+% For submission you will eventually want the IOP class:
+%     \documentclass[12pt]{iopart}
+% (download iopart.cls from the IOP author guidelines page). For now this
+% scaffold uses `article` so it compiles anywhere; the section structure
+% carries over unchanged.
+% =========================================================================
+\documentclass[11pt]{article}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{xcolor}
+\usepackage[colorlinks=true, citecolor=blue, linkcolor=blue]{hyperref}
+
+% --- TODO helper: prints bold red inline notes so nothing gets forgotten ---
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+\title{Physics-Informed Priors for Machine-Learned Interatomic Potentials with Uncertainty Quantification}
+\author{George Simmons \todo{co-authors, affiliations, corresponding email}}
+\date{June 2026}
+
+\begin{document}
+\maketitle
+
+% =========================================================================
+\begin{abstract}
+% MLST abstracts are typically 150--250 words. A reliable four-sentence
+% template: (1) problem, (2) approach, (3) headline results, (4) implication.
+Machine-learned interatomic potentials (MLIPs) achieve near--first-principles accuracy at a fraction of the cost, but their reliability degrades sharply in regions of configuration space that are sparsely represented in the training data. The conventional remedy---generating additional density functional theory (DFT) reference data through active learning or fine-tuning---is computationally expensive and inherits known deficiencies of DFT itself, such as poorly converged stresses. Here we introduce a framework for embedding physics-informed priors directly into the training of linear MLIPs by recasting the fit as a quadratic program with linear constraints. We demonstrate that these constraints (i) restore repulsive core behaviour without recourse to empirical baseline potentials such as ZBL, enabling stable simulation at high pressures, (ii) can encode experimentally measured properties, circumventing DFT convergence issues, and (iii) incur negligible cost in accuracy or evaluation time relative to unconstrained fits. We further couple the constrained models with uncertainty quantification via \todo{expand POPS acronym} (POPS) committees and analyse how constraints reshape predictive uncertainty inside and outside the training distribution. \todo{One sentence of headline quantitative results, e.g. RMSE numbers or pressure range accessed.} Our approach offers a cheap, data-efficient alternative to brute-force dataset expansion for patching holes in the potential energy surface.
+\end{abstract}
+
+% =========================================================================
+\section{Introduction}
+\label{sec:intro}
+
+% --- Paragraph 1: context. Why MLIPs matter. ---
+Machine-learned interatomic potentials have become a standard tool for atomistic simulation, offering near-DFT accuracy at orders of magnitude lower cost \todo{cite: ACE (Drautz 2019), GAP, MTP, NequIP/MACE review}. Linear models built on systematic basis expansions, such as the atomic cluster expansion (ACE), are particularly attractive because of their fast evaluation, systematic convergence, and amenability to well-understood regression techniques \todo{cite: Drautz 2019, Lysogorskiy 2021 (PACE), Witt 2023 (ACEpotentials.jl)}.
+
+% --- Paragraph 2: the problem. Holes in the PES. ---
+A persistent failure mode of MLIPs is unphysical behaviour in regions of configuration space poorly covered by training data. The dominant strategy for addressing these ``holes'' in the potential energy surface (PES) is to generate more reference data---via active learning, hyper-active learning, or fine-tuning of foundation models \todo{cite: hyperactive learning (van der Oord 2023), D-optimality/MaxVol active learning (Podryabinkin \& Shapeev), fine-tuning papers}. This is computationally expensive, and, more fundamentally, it presumes that DFT is a trustworthy oracle everywhere. In practice DFT stresses are often poorly converged with respect to plane-wave cutoff and k-point sampling, so elastic properties inherited from DFT reference data can be systematically wrong \todo{cite: DFT stress convergence studies; possibly delta-project style benchmarks}.
+
+% --- Paragraph 3: a concrete symptom. Non-repulsive cores. ---
+A striking example is the behaviour of fitted potentials at short interatomic separations. Because typical training sets contain few or no configurations with close atomic approaches (see the pair-distance histogram in Figure~\ref{fig:eos_hist}), unconstrained models frequently exhibit spurious attractive wells inside the repulsive core region. Such artefacts render the potential unusable for high-pressure, radiation-damage, or shock simulations, and are conventionally patched by splicing in an empirical screened-Coulomb baseline such as ZBL \todo{cite: ZBL 1985; examples of ZBL splicing in MLIP literature}, at the cost of introducing an ad hoc, element-pair-specific reference potential and a crossover region that must be tuned by hand.
+
+% --- Paragraph 4: our approach. ---
+In this work we take a different route: rather than adding data or empirical baselines, we impose physical knowledge directly on the model parameters at training time. For linear MLIPs the least-squares fit can be recast as a quadratic program (QP), and physical requirements---repulsive cores, curvature conditions, or constraints derived from experimentally measured properties---enter naturally as linear constraints on the coefficients. The resulting fit remains convex and is solved to global optimality by standard QP solvers \todo{cite: OSQP or whichever solver you used; QP textbook e.g. Boyd \& Vandenberghe}.
+
+% --- Paragraph 5: contributions, mirrors your "Main points" list. ---
+Our contributions are as follows. First, we show that physics-informed linear constraints patch holes in the PES at negligible computational cost, providing an alternative to DFT dataset expansion (Section~\ref{sec:results_pareto}). Second, we demonstrate constraints formulated from experimental data, sidestepping poorly converged DFT stresses for elastic and vibrational properties (Section~\ref{sec:results_experimental}). Third, we show that constrained models recover strictly repulsive cores, giving access to high-pressure conditions without ZBL splicing (Section~\ref{sec:results_core}). Finally, we integrate uncertainty quantification via POPS committees and analyse how the constraints alter uncertainty estimates in and out of the training distribution (Section~\ref{sec:results_uq}).
+
+% =========================================================================
+\section{Methods}
+\label{sec:methods}
+
+\subsection{Linear MLIPs and the atomic cluster expansion}
+\label{sec:methods_ace}
+\todo{2--3 paragraphs: brief recap of the ACE basis, notation for the design matrix $B$, targets $y$ (energies/forces/virials), and regularisation operator $\Gamma$. Define total degree and correlation order $\tilde{v}$ here since they appear in Figures~\ref{fig:pareto_energy} and \ref{fig:pareto_force}.}
+
+The unconstrained model is obtained from regularised least squares,
+\begin{equation}
+    \text{minimize}\quad \left\| Xc - y \right\|_2^2
+    \quad\text{where}\quad X = B^{T}B + \Gamma^{T}\Gamma.
+    \label{eq:lsq}
+\end{equation}
+\todo{Check this equation: as written, $X$ is the regularised Gram matrix but then $\|Xc-y\|$ mixes dimensions ($X$ is $d\times d$, $y$ is data-space). You probably mean minimize $\|Bc-y\|_2^2 + \|\Gamma c\|_2^2$, whose normal equations involve $X = B^TB+\Gamma^T\Gamma$. Worth fixing before review.}
+
+\subsection{Constrained fitting as quadratic programming}
+\label{sec:methods_qp}
+Enforcing linear constraints during training is achieved within the quadratic programming framework:
+\begin{equation}
+\begin{split}
+    & \text{minimize} \quad \tfrac{1}{2}\,c^{T} P c + q^{T}c \\
+    & \text{subject to} \quad l \leq Ac \leq u,
+\end{split}
+\label{eq:qp}
+\end{equation}
+where $c \in \mathbb{R}^{d}$ are the model parameters, $P \in \mathbb{S}_{+}^{d}$ is the regularised Gram matrix $P := B^{T}B + \Gamma^{T}\Gamma$, and $q := -B^{T}y$ \todo{sign check: the QP objective equivalent to least squares needs $q = -B^Ty$}. The constraint matrix $A$, together with lower and upper bounds $l, u$, encodes the physical priors described below.
+
+\todo{Paragraph on solver choice, convergence tolerances, and computational cost of the QP relative to the unconstrained solve.}
+
+\subsection{Construction of physics-informed priors}
+\label{sec:methods_priors}
+\todo{This is the heart of the paper --- one subsubsection per constraint family:}
+\begin{itemize}
+    \item \todo{Repulsive core constraints: how monotonicity/positivity of the pair contribution at short range is expressed as linear inequalities on $c$; at what radii the constraints are collocated.}
+    \item \todo{Experimentally derived constraints: e.g. equilibrium lattice constant, cohesive energy, elastic constants or phonon frequencies as (approximately) linear conditions on $c$; how experimental uncertainty sets $l$ and $u$.}
+    \item \todo{Any curvature / convexity / asymptotic decay constraints.}
+\end{itemize}
+
+\subsection{Uncertainty quantification via POPS}
+\label{sec:methods_uq}
+\todo{Define POPS, describe committee generation, and state how constraints are applied per committee member (is each sample re-projected onto the feasible set?). Describe the coverage metric used to compare predicted uncertainty against actual errors on training/test data.}
+
+\subsection{Computational details}
+\label{sec:methods_comp}
+\todo{Datasets (source of Al and W data, sizes, 10\% subsampling), cutoffs ($r_{\text{cut}} = 6.0$\,\AA), basis sizes, software versions, DFT settings of the reference data if regenerated, phonon calculation settings (supercell size, e.g. $4\times4\times4$; displacement amplitude; phonopy or equivalent).}
+
+% =========================================================================
+\section{Results}
+\label{sec:results}
+
+\subsection{Accuracy and cost of constrained fits}
+\label{sec:results_pareto}
+% Message: constraints are (nearly) free.
+\todo{Walk the reader through Figures~\ref{fig:pareto_energy} and \ref{fig:pareto_force}: constrained and unconstrained models trace essentially the same accuracy--cost Pareto front across total degrees 12--20, i.e.\ the physical priors cost little in RMSE or evaluation time. Quote representative numbers.}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{energy_pareto_front.png}
+    \caption{Energy accuracy--cost Pareto front for Al models of increasing total degree (colour bar), comparing unconstrained (crosses) and constrained (circles) fits. $r_{\text{cut}}=6.0$\,\AA, 10\% of full dataset, $\tilde{v} = 2$. \todo{polish caption}}
+    \label{fig:pareto_energy}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{force_pareto_front.png}
+    \caption{Force accuracy--cost Pareto front for Al, $r_{\text{cut}}=6.0$\,\AA, 10\% of full dataset, $\tilde{v} = 2$. Symbols as in Figure~\ref{fig:pareto_energy}. \todo{polish caption}}
+    \label{fig:pareto_force}
+\end{figure}
+
+\subsection{Repulsive cores and access to high-pressure conditions}
+\label{sec:results_core}
+% Message: unconstrained model has a catastrophic attractive well below the
+% data support; constrained model is repulsive everywhere; no ZBL needed.
+\todo{Discuss Figure~\ref{fig:eos_hist}: the pair-distance histogram shows the training data supports separations only down to $\sim$2\,\AA; below that the unconstrained+ZBL model develops an unphysical turnover while the constrained ACE rises monotonically. Emphasise the constrained curve requires no empirical baseline.}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{eos_with_hist.png}
+    \caption{Bulk tungsten cell energies for different lattice constants, with histogram detailing the distribution of pair distances in the training data set.}
+    \label{fig:eos_hist}
+\end{figure}
+
+% ------------------------------------------------------------------
+% NEW FIGURE — the RDF failure comparison you mentioned goes here.
+% ------------------------------------------------------------------
+\todo{Add discussion of dynamical consequences: in MD, the attractive core of the unconstrained model leads to atom collapse/fusion, visible as spurious short-range structure in the radial distribution function, whereas the constrained model produces the physically expected RDF.}
+
+\begin{figure}[htbp]
+    \centering
+    % Replace with your actual filename(s). If you have two panels
+    % (failed model RDF vs constrained model RDF), either combine them
+    % into one image or use the subcaption package for (a)/(b) panels.
+    \includegraphics[width=\linewidth]{rdf_failure_comparison.png}
+    \caption{Radial distribution functions from molecular dynamics at \todo{temperature, pressure, ensemble}. The unconstrained model (\todo{colour/style}) exhibits an unphysical peak at short separations arising from its attractive core, indicative of atomic collapse; the constrained model (\todo{colour/style}) reproduces the expected structure. \todo{polish caption}}
+    \label{fig:rdf_failure}
+\end{figure}
+
+\subsection{Constraints from experimental data: phonons}
+\label{sec:results_experimental}
+% Message: DFT stresses are unreliable → constrain to experiment instead.
+\todo{Motivate with the DFT stress-convergence problem (main point 2). Then discuss Figures~\ref{fig:phonons_unconstrained} and \ref{fig:phonons_constrained}: the unconstrained committee shows enormous spread and imaginary modes (negative frequencies), while the constrained committee is tightly clustered around the physical dispersion. Compare against experimental/reference dispersion if available.}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{unconstrained_phonon_committee.png}
+    \caption{Al phonon dispersion for the unconstrained ACE committee (grey: committee members; red: \todo{mean or MAP model}). Note the large spread and unphysical imaginary modes (shown as negative frequencies). \todo{polish caption}}
+    \label{fig:phonons_unconstrained}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{phonon_committee_samples_THz_4x4x4.png}
+    \caption{As Figure~\ref{fig:phonons_unconstrained}, but for the constrained committee ($4\times4\times4$ supercell). The committee spread is dramatically reduced and all members are dynamically stable. \todo{polish caption}}
+    \label{fig:phonons_constrained}
+\end{figure}
+
+\subsubsection{Gr\"uneisen parameters}
+\label{sec:results_gruneisen}
+% Planned analysis — placeholder section.
+\todo{Planned: compute mode Gr\"uneisen parameters $\gamma_{qs} = -\frac{V}{\omega_{qs}}\frac{\partial \omega_{qs}}{\partial V}$ for the constrained Al models (finite-difference over volumes), compare committee spread of $\gamma_{qs}$ for constrained vs unconstrained fits, and, if possible, against experiment. This probes whether the constraints improve not just harmonic frequencies but their volume dependence, i.e.\ anharmonic thermodynamics (thermal expansion via quasi-harmonic approximation).}
+
+\subsection{Effect of constraints on uncertainty estimates}
+\label{sec:results_uq}
+\todo{Main point 5. Report coverage statistics of the POPS committee on training and test data, with and without constraints. Key questions to answer for the reader: do constraints shrink uncertainty only where physics is imposed, or globally? Does coverage remain calibrated (e.g.\ fraction of test errors within predicted 1--2$\sigma$)? Include a coverage table or calibration plot here.}
+
+% =========================================================================
+\section{Discussion}
+\label{sec:discussion}
+\todo{Suggested paragraphs: (1) constraints vs.\ more data --- when is each appropriate, and how they compose (constraints as a complement to active learning, not a replacement); (2) constraints vs.\ ZBL splicing --- no hand-tuned crossover, transferable recipe; (3) experimental priors as a partial cure for DFT deficiencies, and the epistemological point of mixing data sources; (4) limitations: linearity requirement of constraints, applicability to nonlinear MLIPs (message-passing networks) perhaps via distillation or output-space constraints; choice of collocation points; (5) implications of the UQ analysis.}
+
+% =========================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+\todo{4--6 sentences: restate the framework (QP with linear physical constraints for linear MLIPs), the three headline demonstrations (repulsive cores/high pressure, experimental priors, essentially free in accuracy and cost), the UQ finding, and one forward-looking sentence (e.g.\ extension to multicomponent systems, foundation-model fine-tuning with constraints, Gr\"uneisen/anharmonic properties).}
+
+% =========================================================================
+\section*{Acknowledgments}
+\todo{Funding bodies, grant numbers, HPC allocations, helpful discussions.}
+
+\section*{Data availability statement}
+% MLST requires one of their standard statements.
+\todo{e.g. ``The data that support the findings of this study are openly available at [DOI/repository] / available from the corresponding author upon reasonable request.'' Consider archiving fitting code + datasets on Zenodo.}
+
+% =========================================================================
+% References — for iopart, IOP prefers Harvard or Vancouver numeric style.
+% Swap to BibTeX when ready:
+%   \bibliographystyle{iopart-num}
+%   \bibliography{refs}
+\begin{thebibliography}{99}
+\bibitem{drautz2019} \todo{Drautz R 2019 Atomic cluster expansion for accurate and transferable interatomic potentials {\it Phys. Rev.} B {\bf 99} 014104}
+\bibitem{zbl1985} \todo{Ziegler J F, Biersack J P and Littmark U 1985 {\it The Stopping and Range of Ions in Matter}}
+\bibitem{todo} \todo{active learning, POPS, QP solver, DFT stress convergence, ACEpotentials.jl, phonopy, etc.}
+\end{thebibliography}
+
+\end{document}

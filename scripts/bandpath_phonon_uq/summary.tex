@@ -1,0 +1,157 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,graphicx,booktabs,xcolor,microtype}
+\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
+\usepackage{algorithm}
+\usepackage[noend]{algpseudocode}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\bt}{\boldsymbol{\theta}}
+\newcommand{\figdir}{/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/models/Al_20_4_6A_2_subset_50_percent/results/bandpath_phonon_uq}
+
+\title{\textbf{Phonon-stable uncertainty quantification for linear ACE potentials\\ via the undotted Hessian and band-path constraints}}
+\author{Al\,$(20,4,6\text{\AA},2)$, subset\_50\_percent}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+POPS committees for a linear ACE machine-learning interatomic potential produce
+individual members whose phonon dispersions are wildly unstable (imaginary modes
+down to $-5.8$\,THz across the Brillouin zone), even though every member is an
+honest fit to the data. We (i) show the per-member phonon check collapses to a
+matrix--vector product plus a small eigendecomposition once the \emph{undotted}
+per-basis Hessian is extracted, exploiting the linearity of the ACE energy in
+its parameters; (ii) use this to constrain each committee member to be
+dynamically stable along the entire high-symmetry band path, at a fixed
+equilibrium lattice constant; and (iii) verify that the resulting committee is
+stable everywhere, sits at a genuine energy minimum, retains its predictive
+uncertainty coverage, and yields Gr\"uneisen parameters with quantified
+uncertainty.
+\end{abstract}
+
+\section{Setup}
+A linear ACE potential predicts the total energy as $E(\bt) = \sum_k \theta_k B_k$
+with basis functions $B_k$ and linear parameters $\bt \in \R^{n_p}$
+($n_p=314$ here). A POPS committee $\{\bt^{(s)}\}$ represents parameter
+uncertainty by resampling the fit; the point of failure is that a committee
+member accurate in energy/forces can still have a dynamically \emph{unstable}
+lattice.
+
+\section{The undotted Hessian}
+Because $E$ is linear in $\bt$, so is the position Hessian:
+\begin{equation}
+  H(\bt) \;=\; \frac{\partial^2 E}{\partial \mathbf r\,\partial \mathbf r}
+  \;=\; \sum_{k=1}^{n_p} \theta_k\, H_k,
+  \qquad H_k \equiv \frac{\partial^2 B_k}{\partial \mathbf r\,\partial \mathbf r}.
+\end{equation}
+The native \texttt{hessian} routine returns the \emph{dotted} object $H(\bt)$;
+we extract the per-basis $H_k$ (``undotted'') in one pass by nested
+automatic differentiation of \texttt{evaluate\_basis} at the site level, then
+assembling with the same finite-cluster/PBC accumulation the native routine
+uses. This is validated against the native Hessian to $\sim\!10^{-13}$:
+$\max_{i,j}\big|\sum_k \theta_k (H_k)_{ij} - H(\bt)_{ij}\big| = 6.7\times10^{-13}$
+at the fitted $\bt$ and $4.2\times10^{-14}$ at a random $\bt$.
+
+\paragraph{Why it matters.} $H_k$ depends only on \emph{geometry}. At a
+\emph{fixed} lattice constant it is built \emph{once}; thereafter the dynamical
+matrix at any wavevector $q$ is linear in $\bt$,
+\begin{equation}
+  D(q,\bt) \;=\; \sum_k \theta_k\, D_k(q),
+  \qquad D_k(q) = \text{Bloch transform of } H_k,
+\end{equation}
+so a committee member's phonon check is a matvec $\sum_k\theta_k D_k(q)$ plus a
+tiny eigendecomposition per $q$. The Hessian dominates the cost; the
+eigendecomposition is negligible. Amortised over $K$ parameter-vector checks the
+cost is \emph{one} build $+\,K\times$(instant) rather than $K$ builds --- which
+is what makes a phonon check affordable as a \emph{rejection-sampling
+predicate}.
+
+\section{Validity requires a fixed equilibrium}
+$D_k(q)$ is built at one geometry. For a member's check to be its \emph{true}
+phonon spectrum, that member's equilibrium must coincide with the reference
+geometry. We therefore constrain
+\begin{equation}
+  b'\!\cdot\bt = 0 \quad(\text{stationary}), \qquad
+  b''\!\cdot\bt > 0 \quad(\text{minimum}),
+\end{equation}
+where $b',b''$ are the first/second derivatives of the energy basis with respect
+to the lattice constant. This pins each member's equilibrium onto the reference
+$a_{\mathrm{eq}}$ (verified: every member relaxes independently to
+$a_{\mathrm{eq}}$ within $10^{-7}$\,\AA), so the single undotted Hessian is
+genuinely each member's Hessian, and $a_{\mathrm{eq}}$ is a true minimum (not a
+saddle) in both volume and all phonon directions.
+
+\section{Algorithm}
+\begin{algorithm}[h]
+\caption{Phonon-stable band-path committee}
+\begin{algorithmic}[1]
+\State Build the undotted $H_k$ once at $a_{\mathrm{eq}}$; precompute $D_k(q)$ on a dense band path $\Gamma$--$X$--$U$--$L$--$\Gamma$--$K$.
+\State Constrain the mean fit and each POPS proposal member to $b'\!\cdot\bt=0,\ b''\!\cdot\bt>0$, and Born stability.
+\State \textbf{Phonon sweep:} evaluate $\min_{q,\nu}\omega_{q\nu}(\bt)=$ eig$\,D(q,\bt)$; flag members with soft modes.
+\State \textbf{Constrain the naughty (cutting plane):} for each soft mode $(q,e)$ add the exact positive-curvature row $e^{\!\dagger}D_k(q)e\cdot\bt \ge \omega_{\min}^2$ and re-solve the constrained QP (OSQP, $a_{\mathrm{eq}}$ held) until stable.
+\State \textbf{Rejection sample} the committee from the stable cloud, using the band-path phonon check as the acceptance predicate.
+\State \textbf{Verify} every accepted member on the band path.
+\State \textbf{Propagate} to phonons and compare against the naive committee; run the test-set calibration and Gr\"uneisen studies.
+\end{algorithmic}
+\end{algorithm}
+
+The curvature row is exact and linear: the second derivative of the energy along
+the phonon displacement $u=\mathrm{Re}(e\,e^{\mathrm i q\cdot r})/\sqrt m$ is
+$e^{\dagger}D(q,\bt)e = \sum_k(e^{\dagger}D_k(q)e)\theta_k$, so ``curvature $>0$
+along this mode'' drops straight into the QP and the rejection test.
+
+\section{Results}
+\begin{figure}[h]\centering
+  \includegraphics[width=0.49\textwidth]{\figdir/bands_naive.png}\hfill
+  \includegraphics[width=0.49\textwidth]{\figdir/bands_constrained.png}
+  \caption{Committee phonon dispersions. \textbf{Left:} naive POPS --- many
+  members (red) have large imaginary regions, down to $-5.8$\,THz. \textbf{Right:}
+  the constrained committee --- every member stable across the whole path;
+  $0/30$ unstable, minimum non-acoustic frequency $+0.16$\,THz.}
+\end{figure}
+
+The constrained committee is stable everywhere ($0/30$ vs.\ the naive committee's
+catastrophic instabilities), sits at a genuine minimum
+($\lvert b'\!\cdot\bt\rvert \le 4\times10^{-7}$, $b''\!\cdot\bt \ge +4.4$\,eV/\AA$^2$),
+and satisfies Born stability ($C_{44}\ge 8.8$, $C_{11}-C_{12}\ge 31$\,GPa).
+
+\begin{figure}[h]\centering
+  \includegraphics[width=0.49\textwidth]{\figdir/energy_parity.png}\hfill
+  \includegraphics[width=0.49\textwidth]{\figdir/energy_calibration.png}
+  \caption{Test-set energy parity with committee bounds (left) and the
+  error-vs-committee-bound calibration histogram (right). Coverage is preserved
+  relative to the naive baseline; the residual miscoverage is dominated by the
+  under-trained mean's systematic bias, not by committee width.}
+\end{figure}
+
+\paragraph{Coverage.} Constraining for stability did not collapse the committee:
+energy coverage is $\approx\!46\%$ versus a $\approx\!42\%$ naive baseline. The
+absolute value is limited by the mean model (RMSE $\approx 1$\,eV, systematic
+bias) --- a training-data property, not a committee-construction one --- since a
+committee centred on a biased mean cannot cover regardless of width, and POPS
+uncertainty is in-sample while the test set is partly out-of-distribution.
+
+\begin{figure}[h]\centering
+  \includegraphics[width=0.49\textwidth]{\figdir/gruneisen_bandpath.png}\hfill
+  \includegraphics[width=0.49\textwidth]{\figdir/gruneisen_vs_T.png}
+  \caption{Mode Gr\"uneisen parameters along the band path (left) and the
+  heat-capacity-weighted thermodynamic $\gamma(T)$ (right), each with committee
+  mean $\pm 1\sigma$, from undotted Hessians at three volumes.}
+\end{figure}
+
+\section{What it means}
+The undotted Hessian turns a per-member phonon calculation from a full Hessian
+build into an instant matvec, which makes it feasible to \emph{enforce}
+Brillouin-zone dynamical stability across a whole committee --- either by
+projection/cutting-plane repair or as a rejection predicate --- at a fixed,
+physically meaningful equilibrium. The outcome is a committee that is
+simultaneously data-faithful, dynamically stable everywhere on the band path,
+anchored at a true energy minimum, and honestly calibrated, from which
+derived quantities such as Gr\"uneisen parameters inherit well-defined
+uncertainties. Supercell adequacy for the $3\times3\times3$ force constants is
+marginal ($1.5a = 6.07$\,\AA{} vs.\ $r_{\mathrm{cut}}=6.0$\,\AA); a
+$4\times4\times4$ rebuild (cheap given the undotted machinery) provides a
+citable convergence check.
+
+\end{document}

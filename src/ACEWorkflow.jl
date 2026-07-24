@@ -12,6 +12,7 @@ using .Models
 
 # Re-export POPS
 export corrections, hypercube, sample_hypercube, rejection_sample_hypercube
+export gaussian_proposal, sample_gaussian, rejection_sample_gaussian
 
 # Re-export Elasticity
 export voigt_to_eps, strained_system
