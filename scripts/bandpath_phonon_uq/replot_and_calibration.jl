@@ -29,7 +29,9 @@ println("Committee source: $cdir\nOutputs → $outdir")
 
 a_eq = ACEWorkflow.relax_lattice_constant(model, element)
 bp   = bandpath_Dk(result, model, element, a_eq, N_cell; N_per_seg=20)
-θ_mean_bands = vec(mean(readdlm("$cdir/committee_repaired.csv", ','); dims=1))   # a_eq-constrained mean proxy
+# phonon-repaired constrained mean (saved by the committee script); fall back to committee average
+θ_mean_bands = isfile("$cdir/theta_mean.csv") ? vec(readdlm("$cdir/theta_mean.csv", ',')) :
+                                                vec(mean(readdlm("$cdir/committee_repaired.csv", ','); dims=1))
 
 # ── regenerate the same naive draw (raw forest members) for comparison ───────
 P = result.P; Ap = Diagonal(result.W)*result.A/P; Yw = result.W.*result.Y; λ = 1.0/size(Ap,1)

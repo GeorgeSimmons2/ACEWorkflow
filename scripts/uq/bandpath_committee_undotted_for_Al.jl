@@ -30,9 +30,9 @@ N_per_seg      = 20
 cut_margin_THz = 0.15
 n_lev, n_res, n_rand = 5, 10, 15
 max_cuts       = 40
-test_stride    = 10
+test_stride    = 20
 
-result     = load_model(element, 20, 4, 6, 2; dataset_name=dataset)
+result     = load_model(element, 20, 4, 6, 3; dataset_name=dataset)
 model      = result.model; lin_params = result.lin_params; n_params = length(lin_params)
 P = result.P; Ap = Diagonal(result.W)*result.A/P; Yw = result.W.*result.Y; λ = 1.0/size(Ap,1)
 outdir = "$(result.dir)/results/bandpath_undotted"; mkpath(outdir)
@@ -159,3 +159,15 @@ println("\n══ RESULT ══════════════════�
 @printf("  constrained committee: %d/%d phonon-unstable | naive: %d/%d\n",
         count(<(-0.05), minf_rej), length(minf_rej), count(<(-0.05), minf_naive), length(minf_naive))
 println("All outputs → $outdir/")
+
+@printf("  %d test configs\n", pr.n)
+eR = parity_plot(pr.tE, pr.pE, pr.loE, pr.hiE, "DFT energy (eV)", "ACE energy (eV)", "$outdir/energy_parity.png")
+cE = calibration_hist(pr.tE, pr.pE, pr.loE, pr.hiE; label="Energy", path="$outdir/energy_calibration.png")
+@printf("  ENERGY  RMSE=%.4g eV   coverage=%.1f%%   bias=%.0f%% MAE\n", eR, cE.coverage, cE.bias)
+if !isempty(pr.tF)
+    fR = parity_plot(pr.tF, pr.pF, pr.loF, pr.hiF, "DFT force (eV/Å)", "ACE force (eV/Å)", "$outdir/force_parity.png"; col=:tomato)
+    cF = calibration_hist(pr.tF, pr.pF, pr.loF, pr.hiF; label="Force", path="$outdir/force_calibration.png")
+    @printf("  FORCE   RMSE=%.4g eV/Å coverage=%.1f%%   bias=%.0f%% MAE\n", fR, cF.coverage, cF.bias)
+end
+ACEpotentials.Models.set_linear_parameters!(model, lin_params)
+println("\nSaved: bands_constrained.png, bands_naive.png, {energy,force}_parity.png, {energy,force}_calibration.png → $outdir/")

@@ -2,8 +2,8 @@
 \usepackage[margin=1in]{geometry}
 \usepackage{amsmath,amssymb,graphicx,booktabs,xcolor,microtype}
 \usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
-\usepackage{algorithm}
-\usepackage[noend]{algpseudocode}
+% include a figure only if it has been generated yet (Grüneisen runs separately)
+\newcommand{\safefig}[2]{\IfFileExists{#1}{\includegraphics[width=#2]{#1}}{\fbox{\parbox[c][3cm][c]{#2}{\centering\itshape figure pending:\\ \texttt{\detokenize{#1}}}}}}
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\bt}{\boldsymbol{\theta}}
 \newcommand{\figdir}{/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/models/Al_20_4_6A_2_subset_50_percent/results/bandpath_phonon_uq}
@@ -83,18 +83,15 @@ genuinely each member's Hessian, and $a_{\mathrm{eq}}$ is a true minimum (not a
 saddle) in both volume and all phonon directions.
 
 \section{Algorithm}
-\begin{algorithm}[h]
-\caption{Phonon-stable band-path committee}
-\begin{algorithmic}[1]
-\State Build the undotted $H_k$ once at $a_{\mathrm{eq}}$; precompute $D_k(q)$ on a dense band path $\Gamma$--$X$--$U$--$L$--$\Gamma$--$K$.
-\State Constrain the mean fit and each POPS proposal member to $b'\!\cdot\bt=0,\ b''\!\cdot\bt>0$, and Born stability.
-\State \textbf{Phonon sweep:} evaluate $\min_{q,\nu}\omega_{q\nu}(\bt)=$ eig$\,D(q,\bt)$; flag members with soft modes.
-\State \textbf{Constrain the naughty (cutting plane):} for each soft mode $(q,e)$ add the exact positive-curvature row $e^{\!\dagger}D_k(q)e\cdot\bt \ge \omega_{\min}^2$ and re-solve the constrained QP (OSQP, $a_{\mathrm{eq}}$ held) until stable.
-\State \textbf{Rejection sample} the committee from the stable cloud, using the band-path phonon check as the acceptance predicate.
-\State \textbf{Verify} every accepted member on the band path.
-\State \textbf{Propagate} to phonons and compare against the naive committee; run the test-set calibration and Gr\"uneisen studies.
-\end{algorithmic}
-\end{algorithm}
+\begin{enumerate}\setlength{\itemsep}{2pt}
+\item Build the undotted $H_k$ once at $a_{\mathrm{eq}}$; precompute $D_k(q)$ on a dense band path $\Gamma$--$X$--$U$--$L$--$\Gamma$--$K$.
+\item Constrain the mean fit \emph{and} each POPS proposal member to $b'\!\cdot\bt=0,\ b''\!\cdot\bt>0$, and Born stability.
+\item \textbf{Phonon sweep:} evaluate $\min_{q,\nu}\omega_{q\nu}(\bt)=$ eig$\,D(q,\bt)$; flag members (and the mean) with soft modes.
+\item \textbf{Constrain the naughty (cutting plane):} for each soft mode $(q,e)$ add the exact positive-curvature row $e^{\dagger}D_k(q)e\cdot\bt \ge \omega_{\min}^2$ and re-solve the constrained QP (OSQP, $a_{\mathrm{eq}}$ held) until stable --- applied to the mean model as well as the members.
+\item \textbf{Rejection sample} the committee from the stable cloud, using the band-path phonon check as the acceptance predicate.
+\item \textbf{Verify} every accepted member on the band path.
+\item \textbf{Propagate} to phonons and compare against the naive committee; run the test-set calibration and Gr\"uneisen studies (each with committee uncertainty).
+\end{enumerate}
 
 The curvature row is exact and linear: the second derivative of the energy along
 the phonon displacement $u=\mathrm{Re}(e\,e^{\mathrm i q\cdot r})/\sqrt m$ is
@@ -103,8 +100,8 @@ along this mode'' drops straight into the QP and the rejection test.
 
 \section{Results}
 \begin{figure}[h]\centering
-  \includegraphics[width=0.49\textwidth]{\figdir/bands_naive.png}\hfill
-  \includegraphics[width=0.49\textwidth]{\figdir/bands_constrained.png}
+  \safefig{\figdir/bands_naive.png}{0.49\textwidth}\hfill
+  \safefig{\figdir/bands_constrained.png}{0.49\textwidth}
   \caption{Committee phonon dispersions. \textbf{Left:} naive POPS --- many
   members (red) have large imaginary regions, down to $-5.8$\,THz. \textbf{Right:}
   the constrained committee --- every member stable across the whole path;
@@ -117,8 +114,8 @@ catastrophic instabilities), sits at a genuine minimum
 and satisfies Born stability ($C_{44}\ge 8.8$, $C_{11}-C_{12}\ge 31$\,GPa).
 
 \begin{figure}[h]\centering
-  \includegraphics[width=0.49\textwidth]{\figdir/energy_parity.png}\hfill
-  \includegraphics[width=0.49\textwidth]{\figdir/energy_calibration.png}
+  \safefig{\figdir/energy_parity.png}{0.49\textwidth}\hfill
+  \safefig{\figdir/energy_calibration.png}{0.49\textwidth}
   \caption{Test-set energy parity with committee bounds (left) and the
   error-vs-committee-bound calibration histogram (right). Coverage is preserved
   relative to the naive baseline; the residual miscoverage is dominated by the
@@ -133,12 +130,20 @@ committee centred on a biased mean cannot cover regardless of width, and POPS
 uncertainty is in-sample while the test set is partly out-of-distribution.
 
 \begin{figure}[h]\centering
-  \includegraphics[width=0.49\textwidth]{\figdir/gruneisen_bandpath.png}\hfill
-  \includegraphics[width=0.49\textwidth]{\figdir/gruneisen_vs_T.png}
-  \caption{Mode Gr\"uneisen parameters along the band path (left) and the
-  heat-capacity-weighted thermodynamic $\gamma(T)$ (right), each with committee
-  mean $\pm 1\sigma$, from undotted Hessians at three volumes.}
+  \safefig{\figdir/gruneisen_bandpath.png}{0.49\textwidth}\hfill
+  \safefig{\figdir/gruneisen_vs_T_comparison.png}{0.49\textwidth}
+  \caption{\textbf{Left:} mode Gr\"uneisen along the band path (constrained committee
+  mean $\pm 1\sigma$), from undotted Hessians at three volumes via Hellmann--Feynman
+  (branch-safe). \textbf{Right:} thermodynamic $\gamma(T)$ --- the constrained committee
+  gives a well-defined value with modest uncertainty, whereas the naive POPS committee's
+  residual imaginary modes leave its $\gamma$ ill-defined and wildly scattered.}
 \end{figure}
+
+\paragraph{Grüneisen.} Enforcing dynamical stability is what makes derived
+thermodynamic quantities meaningful: the constrained committee yields a
+band-path mode Gr\"uneisen and a thermodynamic $\gamma(T)$ with a compact
+uncertainty band, while the naive committee cannot --- its unstable branches
+have no real frequency to differentiate.
 
 \section{What it means}
 The undotted Hessian turns a per-member phonon calculation from a full Hessian

@@ -32,7 +32,7 @@ n_lev, n_res, n_rand = 5, 10, 15
 max_cuts       = 40
 test_stride    = 10
 
-result     = load_model(element, 20, 4, 6, 2; dataset_name=dataset)
+result     = load_model(element, 12, 4, 6, 2; dataset_name=dataset)
 model      = result.model; lin_params = result.lin_params; n_params = length(lin_params)
 P = result.P; Ap = Diagonal(result.W)*result.A/P; Yw = result.W.*result.Y; λ = 1.0/size(Ap,1)
 outdir = "$(result.dir)/results/bandpath_undotted"; mkpath(outdir)
