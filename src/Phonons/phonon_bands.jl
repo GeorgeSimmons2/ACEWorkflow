@@ -208,7 +208,9 @@ end
 Return `(q_list, x_coords, x_ticks, tick_labels, seg_starts)` for the FCC path
 Γ → X → U → L → Γ → K.
 `L` is the 3×3 primitive lattice matrix (columns = lattice vectors, in Å);
-`N_per_seg` gives the number of q-points per segment.
+`N_per_seg` gives the number of q-points per segment — either an `Int` (uniform) or
+a vector of 5 per-segment counts for non-uniform sampling (e.g. `[20,20,20,20,60]`
+samples the final Γ→K segment more densely, where soft modes tend to sit).
 `seg_starts[iq]` is true only for the first q-point (used by branch tracking).
 """
 function fcc_band_path(L; N_per_seg=30)
@@ -232,6 +234,9 @@ function fcc_band_path(L; N_per_seg=30)
 
     segs   = [(:Γ, :X), (:X, :U), (:U, :L), (:L, :Γ), (:Γ, :K)]
     labels = ["Γ", "X", "U", "L", "Γ", "K"]
+    nseg   = N_per_seg isa Integer ? fill(Int(N_per_seg), length(segs)) : collect(Int, N_per_seg)
+    length(nseg) == length(segs) ||
+        throw(ArgumentError("N_per_seg vector must have $(length(segs)) entries (one per Γ→X→U→L→Γ→K segment)"))
 
     q_list     = Vector{Float64}[]
     x_vals     = Float64[]
@@ -245,9 +250,10 @@ function fcc_band_path(L; N_per_seg=30)
 
         seg_len = norm(q2 - q1)
         is_last = (s == length(segs))
+        n_s     = nseg[s]
 
-        ts = is_last ? range(0.0, 1.0, N_per_seg + 1) :
-                       range(0.0, 1.0, N_per_seg + 1)[1:end-1]
+        ts = is_last ? range(0.0, 1.0, n_s + 1) :
+                       range(0.0, 1.0, n_s + 1)[1:end-1]
 
         for (ti, t) in enumerate(ts)
             q = q1 .+ t .* (q2 .- q1)
