@@ -134,64 +134,107 @@ end
 cut_row(iq, e, bp) = (c = vec(conj(e)*transpose(e)); real(vec(transpose(c) * bp.Bq[iq])))
 
 # ── FIXED band-structure plot: full path, acoustic branches reach 0 at Γ ─────
-function plot_committee_bands(members, θ_mean, bp, title, path; unstable_tol=-0.05)
-    fig = Figure(size=(860, 520))
-    ax = Axis(fig[1,1]; xlabel="Wave vector", ylabel="Frequency (THz)", title=title,
-              xticks=(bp.x_ticks, bp.labels), xgridvisible=false)
+# ── Publication-quality committee band structure (IOPScience MLST) ───────────
+# Pass a shared `ylims=(lo,hi)` so two panels can be lined up side by side on the
+# same frequency axis.  `panel` (e.g. "(a)") draws a corner label.  `figsize` is
+# in points (default sized for one half of an MLST double-column figure).  Saves
+# a vector PDF (primary, for the paper) AND a high-DPI PNG (preview) at `path`'s
+# stem, regardless of the extension given.
+function plot_committee_bands(members, θ_mean, bp, title, path;
+                              unstable_tol=-0.05, ylims=nothing, panel=nothing,
+                              figsize=(340, 300))
+    fig = Figure(; size=figsize, figure_padding=(6, 10, 4, 6))
+    ax = Axis(fig[1,1];
+              xlabel="Wave vector", ylabel="Frequency (THz)", title=title,
+              titlesize=11, xlabelsize=11, ylabelsize=11,
+              xticklabelsize=10, yticklabelsize=10,
+              xticks=(bp.x_ticks, bp.labels), xgridvisible=false, ygridvisible=false,
+              xtickalign=1, ytickalign=1, xticksize=4, yticksize=4)
+    # committee members: stable in grey, dynamically-unstable in crimson (thin)
     for θ in members
         F = bands(θ, bp); unstable = min_freq_stable(θ, bp) < unstable_tol
-        col = unstable ? RGBAf(0.8,0.15,0.15,0.4) : RGBAf(0.45,0.45,0.45,0.35)
-        for b in 1:3bp.Np; lines!(ax, bp.x_vals, F[b,:]; color=col, linewidth=1.0); end
+        col = unstable ? RGBAf(0.80, 0.15, 0.15, 0.45) : RGBAf(0.45, 0.45, 0.45, 0.30)
+        for b in 1:3bp.Np; lines!(ax, bp.x_vals, F[b,:]; color=col, linewidth=0.7); end
     end
+    # point / mean model on top, Okabe–Ito blue
     Fm = bands(θ_mean, bp)
-    for b in 1:3bp.Np; lines!(ax, bp.x_vals, Fm[b,:]; color=RGBAf(0,0.3,0.7,0.95), linewidth=2.0); end
+    for b in 1:3bp.Np; lines!(ax, bp.x_vals, Fm[b,:]; color=RGBf(0.0, 0.447, 0.698), linewidth=1.6); end
     hlines!(ax, [0.0]; color=:black, linestyle=:dash, linewidth=0.8)
-    vlines!(ax, bp.x_ticks; color=(:black,0.3), linewidth=0.8)
-    save(path, fig); return fig
+    vlines!(ax, bp.x_ticks; color=(:black, 0.22), linewidth=0.6)
+    xlims!(ax, first(bp.x_vals), last(bp.x_vals))
+    isnothing(ylims) || ylims!(ax, ylims...)
+    panel === nothing || text!(ax, 0.02, 0.98; text=panel, space=:relative,
+                               align=(:left, :top), font=:bold, fontsize=12)
+    stem = replace(path, r"\.(png|pdf)$" => "")
+    save("$stem.pdf", fig)                 # vector — primary artifact for the paper
+    save("$stem.png", fig; px_per_unit=4)  # crisp raster preview
+    return fig
 end
 
 # ── Test-set committee predictions (energy + forces with min/max bounds) ─────
 function committee_predictions(model, committee, test_xyz; stride=10, point_params=mean(committee))
     ACEpotentials.Models.set_committee!(model, committee)
-    ACEpotentials.Models.set_linear_parameters!(model, point_params)   # point prediction = committee mean
+    ACEpotentials.Models.set_linear_parameters!(model, point_params)   # point prediction = LSQ / central model
     tc = ExtXYZ.load(test_xyz)[1:stride:end]
     pE=Float64[];tE=Float64[];loE=Float64[];hiE=Float64[]
     pF=Float64[];tF=Float64[];loF=Float64[];hiF=Float64[]
+    dE=Float64[];dF=Float64[]                                # (ensemble member − point model), pooled over members×configs
     for cfg in tc
         E, co = @committee potential_energy(cfg, model)
-        push!(pE, ustrip(E)); push!(loE, minimum(ustrip.(co))); push!(hiE, maximum(ustrip.(co))); push!(tE, ustrip(cfg[:dft_energy]))
+        coe = ustrip.(co); pe = ustrip(E)
+        push!(pE, pe); push!(loE, minimum(coe)); push!(hiE, maximum(coe)); push!(tE, ustrip(cfg[:dft_energy]))
+        append!(dE, coe .- pe)                               # each member − point model
         if haskey(cfg[1], :dft_forces)
             F, coF = @committee forces(cfg, model)
             append!(tF, reduce(vcat, ustrip.([at[:dft_forces] for at in cfg]))); append!(pF, reduce(vcat, ustrip.(F)))
-            for i in eachindex(coF[1]); fi = reduce(hcat, ustrip(coF[k][i]) for k in eachindex(coF)); append!(loF, vec(minimum(fi;dims=2))); append!(hiF, vec(maximum(fi;dims=2))); end
+            for i in eachindex(coF[1])
+                fi = reduce(hcat, ustrip(coF[k][i]) for k in eachindex(coF)); pfi = ustrip.(F[i])
+                append!(loF, vec(minimum(fi;dims=2))); append!(hiF, vec(maximum(fi;dims=2)))
+                for k in axes(fi,2); append!(dF, fi[:,k] .- pfi); end            # member − point, per component
+            end
         end
     end
-    return (; pE, tE, loE, hiE, pF, tF, loF, hiF, n=length(tc))
+    return (; pE, tE, loE, hiE, pF, tF, loF, hiF, dE, dF, n=length(tc))
 end
 
-# parity plot with committee error bars
-function parity_plot(t, p, lo, hi, xl, yl, path; col=:steelblue)
-    rmse = sqrt(mean((p .- t).^2)); f = Figure(size=(560,560))
-    ax = Axis(f[1,1]; xlabel=xl, ylabel=yl, title="RMSE = $(round(rmse,sigdigits=3))")
-    errorbars!(ax, t, p, p.-lo, hi.-p; whiskerwidth=5, color=(col,0.45)); scatter!(ax, t, p; color=col, markersize=5)
-    l = extrema([t;p]); lines!(ax, collect(l), collect(l); color=:black, linestyle=:dash)
-    save(path, f); return rmse
+# parity plot with committee error bars (publication styling; PDF + hi-DPI PNG)
+function parity_plot(t, p, lo, hi, xl, yl, path; col=RGBf(0.0,0.447,0.698), figsize=(330,330))
+    rmse = sqrt(mean((p .- t).^2))
+    f = Figure(; size=figsize, figure_padding=(6,10,4,6))
+    ax = Axis(f[1,1]; xlabel=xl, ylabel=yl, title="RMSE = $(round(rmse,sigdigits=3))",
+              titlesize=11, xlabelsize=11, ylabelsize=11, xticklabelsize=10, yticklabelsize=10,
+              xgridvisible=false, ygridvisible=false, xtickalign=1, ytickalign=1, aspect=1)
+    l = extrema([t;p]); lines!(ax, collect(l), collect(l); color=:black, linestyle=:dash, linewidth=0.9)
+    errorbars!(ax, t, p, p.-lo, hi.-p; whiskerwidth=4, linewidth=0.6, color=(col,0.35))
+    scatter!(ax, t, p; color=(col,0.9), markersize=4)
+    stem = replace(path, r"\.(png|pdf)$"=>""); save("$stem.pdf", f); save("$stem.png", f; px_per_unit=4)
+    return rmse
 end
 
 # error-vs-committee-bound calibration histogram → coverage, bias, error-violation
-function calibration_hist(t, p, lo, hi; label, path, nbins=60)
-    t,p,lo,hi = Float64.(t),Float64.(p),Float64.(lo),Float64.(hi)
+# Overlay the test-error distribution (truth − point model) with the ensemble's own
+# predictive spread (each POPS member − point model), both / MAE.  A well-calibrated
+# committee has the two distributions of comparable width.  `spread` is the pooled
+# (member − point) deviations from `committee_predictions` (dE for energy, dF for force).
+# Coverage is still the fraction of test points inside the committee min/max envelope.
+function calibration_hist(t, p, lo, hi, spread; label, path, nbins=60)
+    t,p,lo,hi,spread = Float64.(t),Float64.(p),Float64.(lo),Float64.(hi),Float64.(spread)
     err = t.-p; mae = mean(abs.(err)); ne = err./mae
-    be = vcat((t.-lo)./mae, (t.-hi)./mae); ev = mean((t.<lo).|(t.>hi)); bias = mean(err)/mae
-    lim = maximum(abs.(vcat(ne,be))); ed = range(-lim,lim;length=nbins+1)
+    sp = spread./mae                                          # (ensemble member − point model) / MAE
+    ev = mean((t.<lo).|(t.>hi)); bias = mean(err)/mae
+    lim = maximum(abs.(vcat(ne,sp))); ed = range(-lim,lim;length=nbins+1)
     d1=(h=fit(Histogram,ne,ed).weights; max.(h./(sum(h)*step(ed)),1e-3))
-    d2=(h=fit(Histogram,be,ed).weights; max.(h./(sum(h)*step(ed)),1e-3))
-    f=Figure(size=(600,540))
-    ax=Axis(f[2,1]; xlabel="(true − pred) / MAE", ylabel="density", yscale=log10,
-            title="$label — coverage $(round((1-ev)*100,digits=1))%  (bias $(round(bias*100,digits=0))% MAE)")
-    l1=stairs!(ax,ed[1:end-1],d1;step=:post,color=:black,linewidth=2)
-    l2=stairs!(ax,ed[1:end-1],d2;step=:post,color=:orange,linewidth=2)
+    d2=(h=fit(Histogram,sp,ed).weights; max.(h./(sum(h)*step(ed)),1e-3))
+    f=Figure(; size=(380,360), figure_padding=(6,10,4,6))
+    ax=Axis(f[2,1]; xlabel="deviation from point model / MAE", ylabel="density", yscale=log10,
+            title="$label — coverage $(round((1-ev)*100,digits=1))%  (bias $(round(bias*100,digits=0))% MAE)",
+            titlesize=11, xlabelsize=11, ylabelsize=11, xticklabelsize=10, yticklabelsize=10,
+            xgridvisible=false, ygridvisible=false, xtickalign=1, ytickalign=1)
+    l1=stairs!(ax,ed[1:end-1],d1;step=:post,color=:black,linewidth=1.6)
+    l2=stairs!(ax,ed[1:end-1],d2;step=:post,color=RGBf(0.902,0.624,0.0),linewidth=1.6)
     ylims!(ax,1e-3,maximum(vcat(d1,d2))*3)
-    Legend(f[1,1],[l1,l2],["test error","committee bound"];orientation=:horizontal,tellwidth=false,framevisible=true)
-    save(path,f); return (coverage=(1-ev)*100, bias=bias*100, rmse=sqrt(mean(err.^2)))
+    Legend(f[1,1],[l1,l2],["test error (truth − model)","ensemble spread (member − model)"];
+           orientation=:horizontal, tellwidth=false, framevisible=true, labelsize=9, padding=(4,4,2,2))
+    stem = replace(path, r"\.(png|pdf)$"=>""); save("$stem.pdf",f); save("$stem.png",f; px_per_unit=4)
+    return (coverage=(1-ev)*100, bias=bias*100, rmse=sqrt(mean(err.^2)))
 end
