@@ -1,31 +1,37 @@
 # aeq_constrained_pops_coverage_Al_12_4_6A_2.jl
 #
-# POPS committee constrained ONLY to share the mean equilibrium lattice constant,
-# then rejection-sampled, then coverage-compared against the stock naive POPS
-# pipeline (and, if present, the phonon-constrained committee).
+# QUESTION: can we skip the expensive per-member cutting-plane repair entirely?
 #
-# For each observation i the member solves
+# The multi-volume pipeline solves a large OSQP with ~800 phonon cut rows for EVERY
+# observation — 8.6 s each, i.e. days over the full design matrix.  The cheap
+# alternative tested here is:
 #
-#     min ½‖Ãθ̃ − ỹ‖² + (λ/2)‖Pθ̃‖²
-#     s.t.  Ã_i·θ̃ = ỹ_i        (interpolate observation i — the POPS condition)
-#           b′(a_eq)·θ = 0      (equilibrium pinned to the reference a_eq)
-#           b″(a_eq)·θ ≥ ε      (…and it is a minimum, not a maximum)
+#     1. constrain each POPS member ONLY on the lattice constant (one small QP:
+#        interpolate observation i, b′(a_eq)·θ = 0, b″(a_eq)·θ > 0)
+#     2. fit the hypercube to that cloud
+#     3. let the REJECTION SAMPLER enforce phonon positivity, using the six
+#        precomputed multi-volume band-path operators as the predicate
 #
-# with Ã = W·A·P⁻¹, ỹ = W·y, θ̃ = Pθ, λ = 1/M.
+# If the accepted committee is comparable to the expensively-repaired one, the
+# per-member cutting plane is unnecessary and the whole method becomes cheap.
 #
-# This is ONE QP per member — no cutting-plane loop — because there are no phonon
-# constraints, so it runs in minutes on a few cores rather than hours on a cluster.
-# It isolates what the lattice-constant pinning alone does to committee calibration,
-# separately from the Born and phonon rows.
+# THREE COMMITTEES, compared on training-set coverage (same sampler, same size):
 #
-# Rejection sampling cannot impose the equality b′·θ = 0 (zero acceptance probability
-# under a continuous proposal), so the predicate uses the band form
-#   |b′·(θ − θ_mean)| / (b″·θ_mean) ≤ aeq_tol   ≈  |Δa_eq| ≤ aeq_tol Å
-# together with b″·θ ≥ ε, matching the constrained pipeline.
+#   A  cheap a_eq QP over the masked cloud   + phonon rejection      ← the proposal
+#   B  naive POPS hypercube, from scratch    + NO predicate          ← the control
+#   C  30 highest-leverage members, FULL multi-volume cutting-plane
+#      repair, + phonon rejection                                    ← the expensive
+#                                                                      reference
+#
+# Phonon predicate (A and C): min non-acoustic ω ≥ cut_margin at every one of
+# a ∈ a_eq·{1.00,1.02,1.04,1.06,1.08,1.10}, tested softest-volume-first.
+# Plus b″·θ ≥ ε and the band |b′·(θ−θ_mean)|/(b″·θ_mean) ≤ 0.1 (rejection cannot
+# impose the b′·θ = 0 equality — zero acceptance probability under a continuous
+# proposal — so the equality lives only in the QP that builds the cloud).
 #
 # Run locally:  julia --project -t 8 scripts/uq/aeq_constrained_pops_coverage_Al_12_4_6A_2.jl
-#   argv[1] = leverage_percentile   (default 0.5; 0.0 = every observation)
-#   argv[2] = n_samples             (default 30)
+#   argv[1] = leverage_percentile for the cheap cloud (default 0.5; 0.0 = all rows)
+#   argv[2] = committee size                          (default 30)
 
 include(joinpath(@__DIR__, "..", "bandpath_phonon_uq", "lib.jl"))
 using SparseArrays, OSQP, Random, Printf
@@ -33,12 +39,19 @@ Random.seed!(1234)
 @async while true; flush(stdout); sleep(5); end
 
 element, dataset = :Al, ""
-lev_pct    = length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 0.5
-n_samples  = length(ARGS) >= 2 ? parse(Int, ARGS[2])     : 30
-aeq_tol    = 0.1        # Å; band on the member's equilibrium shift
-bpp_floor  = 1e-9       # b″·θ ≥ this
-include_born = false    # true → also impose the three cubic Born rows
-gc_every   = 5_000      # collect periodically; these QPs are small but numerous
+lev_pct   = length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 0.5
+n_samples = length(ARGS) >= 2 ? parse(Int, ARGS[2])     : 30
+n_expensive    = 30          # highest-leverage members for committee C
+N_cell_fc      = 4
+N_per_seg      = [20, 20, 20, 20, 60]
+vol_scales     = collect(1.00:0.02:1.10)
+cut_margin_THz = 0.15
+max_cuts       = 40
+aeq_tol        = 0.1
+bpp_floor      = 1e-9
+include_born   = false       # cheap stage stays lattice-constant-only by default
+gc_every       = 5_000
+max_attempts   = 20_000_000
 
 result = load_model(element, 12, 4, 6, 2; dataset_name=dataset)
 model, lin = result.model, result.lin_params
@@ -46,9 +59,9 @@ A, Y = result.A, result.Y
 P  = result.P
 Ap = Diagonal(result.W)*A/P; Yw = result.W .* Y
 M, K = size(A); λ = 1.0/M
-outdir = "$(result.dir)/results/aeq_constrained_pops"; mkpath(outdir)
-@printf("model %s: %d rows × %d params, %d threads\n", result.name, M, K, Threads.nthreads())
-flush(stdout)
+outdir = "$(result.dir)/results/aeq_cheap_vs_expensive"; mkpath(outdir)
+@printf("model %s: %d rows × %d params, %d threads\nout → %s\n\n",
+        result.name, M, K, Threads.nthreads(), outdir); flush(stdout)
 
 # ── equation-of-state rows at the mean-model a_eq ────────────────────────────
 a_eq = ACEWorkflow.relax_lattice_constant(model, element)
@@ -56,8 +69,7 @@ lattice_basis(a) = ustrip.(u"eV", ACEpotentials.Models.potential_energy_basis(
                         ACEWorkflow.Elasticity.reference_system(element; a=a), model))
 b_prime  = ForwardDiff.derivative(lattice_basis, a_eq)
 b_dprime = ForwardDiff.derivative(a -> ForwardDiff.derivative(lattice_basis, a), a_eq)
-@printf("a_eq = %.5f Å   (b′·θ_lsq = %.3e, b″·θ_lsq = %.3e)\n",
-        a_eq, dot(b_prime, lin), dot(b_dprime, lin))
+@printf("a_eq = %.5f Å\n", a_eq); flush(stdout)
 
 ineq_rows, ineq_lower = b_dprime', [bpp_floor]
 if include_born
@@ -66,107 +78,158 @@ if include_born
     ineq_rows  = vcat(c44', (c11.-c12)', (c11.+2 .*c12)', b_dprime')
     ineq_lower = [0.1, 1.0, 0.1, bpp_floor]
 end
-@printf("inequality rows: %d  (Born %s)\n\n", size(ineq_rows,1), include_born ? "ON" : "OFF")
-flush(stdout)
 
-# ── QP: one solve per member, no cutting planes ──────────────────────────────
+# ── six band paths (cached) — the phonon predicate and committee C need these ─
+a_list = a_eq .* vol_scales; ω2_cut = (cut_margin_THz/FREQ_THz)^2
+println("── band paths at $(length(a_list)) volumes ──"); flush(stdout)
+bps_any = Vector{Any}(undef, length(a_list))
+for (v,a) in enumerate(a_list)
+    @printf("  [%d/%d] a = %.5f Å\n", v, length(a_list), a); flush(stdout)
+    bps_any[v] = bandpath_Dk(result, model, element, a, N_cell_fc; N_per_seg=N_per_seg); GC.gc()
+end
+bps = convert(Vector{typeof(bps_any[1])}, bps_any); nvol = length(bps)
+minω_vol(θ) = [min_freq_stable(θ, bp) for bp in bps]
+minω_all(θ) = minimum(min_freq_stable(θ, bp) for bp in bps)
+all_soft(θ) = [(v,iq,e) for v in 1:nvol for (iq,e) in soft_modes(θ, bps[v], ω2_cut)]
+
+# ── QP machinery ─────────────────────────────────────────────────────────────
 Hqp = sparse(Ap'*Ap .+ λ.*(P'*P)); qqp = -(Ap'*Yw)
 const POOL = [OSQP.Model() for _ in 1:Threads.nthreads()]
-setup_solve(osqp, Afull, l, u) = begin
-    OSQP.setup!(osqp; P=Hqp, q=qqp, A=Afull, l=l, u=u, max_iter=1_000_000,
+solve_qp(osqp, Af, l, u) = begin
+    OSQP.setup!(osqp; P=Hqp, q=qqp, A=Af, l=l, u=u, max_iter=4_000_000,
                 check_termination=25, verbose=false, eps_abs=1e-6, eps_rel=1e-6)
     P \ OSQP.solve!(osqp).x
 end
-constrain_i(osqp, i) = setup_solve(osqp,
+# cheap: interpolation + b′=0 + b″>0 (+Born if enabled).  ONE solve.
+cheap_i(osqp, i) = solve_qp(osqp,
     vcat(sparse(Ap[i,:]'), sparse(b_prime'/P), sparse(ineq_rows/P)),
     vcat([Yw[i]], [0.0], ineq_lower),
     vcat([Yw[i]], [0.0], fill(Inf, length(ineq_lower))))
-mean_fit() = setup_solve(POOL[1],
+# expensive: the same plus accumulated multi-volume phonon cut rows
+function expensive_i(osqp, i)
+    acc = Vector{Vector{Float64}}(); lo = Float64[]; nc = 0
+    mat() = isempty(acc) ? zeros(0,K) : permutedims(reduce(hcat, acc))
+    build(er, el) = solve_qp(osqp,
+        vcat(sparse(Ap[i,:]'), sparse(b_prime'/P), sparse(vcat(ineq_rows, er)/P)),
+        vcat([Yw[i]], [0.0], ineq_lower, el),
+        vcat([Yw[i]], [0.0], fill(Inf, length(ineq_lower)+length(el))))
+    θ = build(zeros(0,K), Float64[]); conv = true
+    for it in 0:max_cuts
+        soft = all_soft(θ); isempty(soft) && break
+        if it == max_cuts; conv = false; break; end
+        for (v,iq,e) in soft; push!(acc, cut_row(iq,e,bps[v])); push!(lo, ω2_cut); end
+        nc += length(soft); θ = build(mat(), lo)
+    end
+    (θ, nc, conv)
+end
+mean_fit() = solve_qp(POOL[1],
     vcat(sparse(b_prime'/P), sparse(ineq_rows/P)),
-    vcat([0.0], ineq_lower),
-    vcat([0.0], fill(Inf, length(ineq_lower))))
-
+    vcat([0.0], ineq_lower), vcat([0.0], fill(Inf, length(ineq_lower))))
 θ_mean = mean_fit()
-@printf("constrained mean: b′·θ = %.3e, b″·θ = %.4g\n", dot(b_prime,θ_mean), dot(b_dprime,θ_mean))
-flush(stdout)
+@printf("constrained mean: b′·θ = %.2e, min ω over volumes = %+.3f THz\n\n",
+        dot(b_prime,θ_mean), minω_all(θ_mean)); flush(stdout)
 
-# ── leverage mask (same rule as POPSRegression.corrections) ──────────────────
+# ── leverage (same rule as POPSRegression.corrections) ───────────────────────
 C = Symmetric(Ap'*Ap .+ λ.*(P'*P)); Cf = cholesky(C)
 AtX = Cf\Matrix(Ap'); θ̃ = Cf\(Ap'*Yw)
 leverage = vec(sum(Ap'.*AtX; dims=1)); residual = Yw .- Ap*θ̃
 kept = findall(leverage .>= quantile(leverage, lev_pct)); n_obs = length(kept)
-@printf("leverage_percentile = %.2f → %d of %d observations\n", lev_pct, n_obs, M)
-flush(stdout)
+top30 = sortperm(leverage; rev=true)[1:n_expensive]
+@printf("leverage_percentile %.2f → %d of %d rows | expensive set = top %d by leverage\n\n",
+        lev_pct, n_obs, M, n_expensive); flush(stdout)
 
-# ── constrain every kept observation ─────────────────────────────────────────
-Θcon = zeros(K, n_obs); t0 = time()
+# ── committee A cloud: cheap a_eq QP over every kept observation ─────────────
+println("── A: cheap a_eq-only QP over $n_obs observations ──"); flush(stdout)
+Θcheap = zeros(K, n_obs); t0 = time()
 for c0 in 1:gc_every:n_obs
     c1 = min(c0+gc_every-1, n_obs)
     Threads.@threads :static for j in c0:c1
-        Θcon[:, j] = constrain_i(POOL[Threads.threadid()], kept[j])
+        Θcheap[:, j] = cheap_i(POOL[Threads.threadid()], kept[j])
     end
-    GC.gc()
-    el = time()-t0; f = c1/n_obs
-    @printf("  %d/%d (%.1f%%) | %.1f min elapsed | est. total %.1f min | heap %.1f GB\n",
+    GC.gc(); el = time()-t0; f = c1/n_obs
+    @printf("  %d/%d (%.1f%%) | %.1f min | est. total %.1f min | heap %.1f GB\n",
             c1, n_obs, 100f, el/60, el/60/f, Sys.maxrss()/2^30); flush(stdout)
 end
-@printf("constrained %d members in %.1f min\n", n_obs, (time()-t0)/60)
-bad = count(j -> dot(b_dprime, Θcon[:,j]) < bpp_floor - 1e-12 || abs(dot(b_prime, Θcon[:,j])) > 1e-6, 1:n_obs)
-@printf("  members violating b′=0 or b″>0 after solve: %d\n\n", bad)
-writedlm("$outdir/constrained_cloud_aeq.csv", Θcon', ',')
-writedlm("$outdir/theta_mean_aeq.csv", θ_mean, ',')
-flush(stdout)
+@printf("  done in %.1f min\n", (time()-t0)/60)
+@printf("  already phonon-stable at all volumes, before any rejection: %d / %d\n\n",
+        count(j -> minω_all(Θcheap[:,j]) >= cut_margin_THz-1e-6, 1:n_obs), n_obs); flush(stdout)
 
-# ── rejection sample ─────────────────────────────────────────────────────────
-K_ref = dot(θ_mean, b_dprime)
-hyp_e, hyp_b = hypercube(Matrix(Θcon' .- θ_mean'))
-@printf("constrained box: %d directions, mean width %.4g\n",
-        size(hyp_e,2), mean(hyp_b[2,:] .- hyp_b[1,:]))
-n_try = Ref(0)
-pred_aeq = θ -> begin
-    n_try[] += 1
-    all(ineq_lower .<= ineq_rows*θ) || return false
-    abs(dot(b_prime, θ .- θ_mean)/K_ref) <= aeq_tol
+# ── committee C cloud: full multi-volume repair, top-30 leverage ─────────────
+println("── C: FULL multi-volume cutting-plane repair on the top $n_expensive leverage rows ──"); flush(stdout)
+Θexp = zeros(K, n_expensive); ncuts = zeros(Int, n_expensive); convf = fill(false, n_expensive)
+t1 = time()
+Threads.@threads :static for j in 1:n_expensive
+    θ, nc, cv = expensive_i(POOL[Threads.threadid()], top30[j])
+    Θexp[:, j] = θ; ncuts[j] = nc; convf[j] = cv
 end
-rej, _ = rejection_sample_hypercube(hyp_e, hyp_b, θ_mean, pred_aeq;
-                                    number_of_committee_members=n_samples,
-                                    max_attempts=5_000_000)
-@printf("  accepted %d of %d proposals (%.2f%%)\n\n", n_samples, n_try[], 100*n_samples/n_try[])
-writedlm("$outdir/committee_aeq_rejection.csv", rej', ',')
-Θ_aeq = rej'
+@printf("  done in %.1f min | cuts median %d max %d | converged %d/%d | all-volume stable %d/%d\n\n",
+        (time()-t1)/60, round(Int,median(ncuts)), maximum(ncuts), count(convf), n_expensive,
+        count(j -> minω_all(Θexp[:,j]) >= cut_margin_THz-1e-6, 1:n_expensive), n_expensive); flush(stdout)
 
-# ── naive POPS baseline, straight from the module ────────────────────────────
+# ── the shared phonon predicate ──────────────────────────────────────────────
+K_ref = dot(θ_mean, b_dprime)
+order = sortperm(minω_vol(θ_mean))               # softest volume first → cheapest rejection
+function make_pred(centre)
+    n = Ref(0); nv = zeros(Int, nvol)
+    f = θ -> begin
+        n[] += 1
+        n[] % 200_000 == 0 && (@printf("      … %d proposals, per-volume rejects %s\n", n[], string(nv)); flush(stdout))
+        all(ineq_lower .<= ineq_rows*θ) || return false
+        abs(dot(b_prime, θ .- centre)/K_ref) <= aeq_tol || return false
+        for v in order
+            min_freq_stable(θ, bps[v]) >= cut_margin_THz-1e-6 || (nv[v]+=1; return false)
+        end
+        true
+    end
+    (f, n, nv)
+end
+function draw(cloud_deltas, centre, label)
+    e, b = hypercube(Matrix(cloud_deltas))
+    @printf("  %s box: %d directions, mean width %.4g\n", label, size(e,2), mean(b[2,:].-b[1,:])); flush(stdout)
+    pf, n, nv = make_pred(centre)
+    m, _ = rejection_sample_hypercube(e, b, centre, pf;
+                                      number_of_committee_members=n_samples, max_attempts=max_attempts)
+    @printf("  %s: accepted %d of %d proposals (%.4f%%) | per-volume rejects %s\n\n",
+            label, n_samples, n[], 100*n_samples/n[], string(nv)); flush(stdout)
+    m'
+end
+
+println("── sampling ──"); flush(stdout)
+Θ_A = draw(Θcheap' .- θ_mean', θ_mean, "A cheap+phonon-reject")
+Θ_C = draw(Θexp'   .- θ_mean', θ_mean, "C expensive+phonon-reject")
+
+# B: naive POPS, from scratch, no constraints anywhere
 cloud = corrections(Matrix(Ap), Vector(Yw), Matrix(P); leverage_percentile=lev_pct, lambda=λ)
-nh_e, nh_b = hypercube(cloud)
-nai, _ = rejection_sample_hypercube(nh_e, nh_b, lin, θ->true;
-                                    number_of_committee_members=n_samples, max_attempts=1_000_000)
-Θ_nai = nai'
-@printf("naive POPS cloud %d × %d, box %d directions, mean width %.4g\n\n",
-        size(cloud,1), size(cloud,2), size(nh_e,2), mean(nh_b[2,:] .- nh_b[1,:]))
+be, bb = hypercube(cloud)
+@printf("  B naive box: %d directions, mean width %.4g (cloud %d × %d)\n",
+        size(be,2), mean(bb[2,:].-bb[1,:]), size(cloud,1), size(cloud,2)); flush(stdout)
+Θ_B = (rejection_sample_hypercube(be, bb, lin, θ->true;
+        number_of_committee_members=n_samples, max_attempts=1_000_000)[1])'
 
-# ── coverage ─────────────────────────────────────────────────────────────────
+for (nm, Θ) in (("A_cheap_phononreject",Θ_A), ("B_naive",Θ_B), ("C_expensive_phononreject",Θ_C))
+    writedlm("$outdir/committee_$nm.csv", Θ, ',')
+end
+
+# ── coverage + phonon check ──────────────────────────────────────────────────
 pt = A*lin
-function coverage(Θ, label)
+function report(Θ, label)
     pr = A*Θ'; lo = vec(minimum(pr;dims=2)); hi = vec(maximum(pr;dims=2))
     cov = (lo .< Y) .& (Y .< hi); w = hi .- lo; ms = .!cov
     rel = any(ms) ? median(max.(lo[ms].-Y[ms], Y[ms].-hi[ms]) ./ max.(w[ms],eps())) : 0.0
-    @printf("  %-32s %7.2f%%  %10.4g %10.4g  %8d %8d  %9.3g\n",
-            label, 100*count(cov)/M, median(w), mean(w), count(Y.<=lo), count(Y.>=hi), rel)
-    return (; lo, hi, cov, w)
+    worst = minimum(minimum(minω_vol(Θ[k,:])) for k in 1:size(Θ,1))
+    @printf("  %-30s %7.2f%%  %10.4g %10.4g  %9.3g  %+9.3f\n",
+            label, 100*count(cov)/M, median(w), mean(w), rel, worst)
+    (; lo, hi, cov, w)
 end
-@printf("── training-set coverage (%d members each) ───────────────────────────────────\n", n_samples)
-@printf("  %-32s %8s  %10s %10s  %8s %8s  %9s\n",
-        "set","coverage","med width","mean width","below","above","med miss/w")
-r_aeq = coverage(Θ_aeq, "a_eq-constrained + rejection")
-r_nai = coverage(Θ_nai, "naive POPS full cloud")
-phon_csv = "$(result.dir)/results/bandpath_undotted_ncell4_densek/committee_rejection.csv"
-r_phon = isfile(phon_csv) ? coverage(readdlm(phon_csv, ','), "phonon-constrained (30 pts)") : nothing
-
-@printf("\n  point-model RMSE %.4g | |Y-pt| median %.4g mean %.4g\n",
-        sqrt(mean((Y.-pt).^2)), median(abs.(Y.-pt)), mean(abs.(Y.-pt)))
-ratio = r_nai.w ./ max.(r_aeq.w, eps())
-@printf("  naive width / a_eq-constrained width: median %.3g, p90 %.3g\n",
-        median(ratio), quantile(ratio,0.9))
-@printf("  a_eq covers, naive does not: %d | naive covers, a_eq does not: %d\n",
-        count(r_aeq.cov .& .!r_nai.cov), count(r_nai.cov .& .!r_aeq.cov))
+@printf("\n── training-set coverage (%d members each) ─────────────────────────────────────\n", n_samples)
+@printf("  %-30s %8s  %10s %10s  %9s  %9s\n",
+        "committee","coverage","med width","mean width","med miss/w","worst ω")
+rA = report(Θ_A, "A cheap a_eq + phonon reject")
+rB = report(Θ_B, "B naive POPS (no constraints)")
+rC = report(Θ_C, "C expensive repair + reject")
+@printf("\n  point-model RMSE %.4g | |Y-pt| median %.4g\n", sqrt(mean((Y.-pt).^2)), median(abs.(Y.-pt)))
+@printf("  width ratio  B/A %.3g   C/A %.3g   (median over rows)\n",
+        median(rB.w ./ max.(rA.w,eps())), median(rC.w ./ max.(rA.w,eps())))
+@printf("  A covers, C does not: %d | C covers, A does not: %d\n",
+        count(rA.cov .& .!rC.cov), count(rC.cov .& .!rA.cov))
 println("\nOutputs → $outdir/")
