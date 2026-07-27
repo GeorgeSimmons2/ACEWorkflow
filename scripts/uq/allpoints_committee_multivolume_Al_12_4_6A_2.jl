@@ -65,7 +65,13 @@ test_stride    = 10
 leverage_percentile = 0.5
 obs_stride     = 1              # further subsampling of the kept set (testing only; 1 = none)
 n_samples      = 10             # committee members drawn from each cloud
-block_size     = 2_000          # checkpoint granularity
+# Checkpoint AND garbage-collection granularity.  Each member leaves ~100 MB of garbage
+# (OSQP setup arrays, sparse conversions, the vcat of born+cut rows once per QP call).
+# Across 20 threads Julia's GC does not keep up: job 5998784 reached 347 GB RSS against
+# ~300 MB of live data, grew at 76 GB/h, and would have OOMed at ~4 h.  Collecting every
+# `block_size` members bounds the heap; 250 caps it at roughly 25 GB.  Smaller blocks also
+# mean more frequent checkpoints, which makes resume cheaper.
+block_size     = 250
 max_attempts   = 20_000_000     # box is larger than the 30-point run → allow more draws
 
 result = load_model(element, 12, 4, 6, 2; dataset_name=dataset)
@@ -222,9 +228,11 @@ for b0 in 1:block_size:n_obs
         Θcon[:, j] = θ; ncut[j] = nc; okf[j] = conv; done[j] = true
     end
     serialize(ckpt, (; Θcon, ncut, okf, done, n_obs, obs_stride, leverage_percentile))
+    GC.gc()                      # reclaim the block's garbage; without this the heap runs away
     el = time()-t_start; frac = count(done)/n_obs
-    @printf("  block %d–%d done | %d/%d (%.1f%%) | elapsed %.1f h | est. total %.1f h\n",
-            b0, b1, count(done), n_obs, 100frac, el/3600, el/3600/max(frac,1e-9))
+    @printf("  block %d–%d done | %d/%d (%.1f%%) | elapsed %.1f h | est. total %.1f h | heap %.1f GB\n",
+            b0, b1, count(done), n_obs, 100frac, el/3600, el/3600/max(frac,1e-9),
+            Sys.maxrss()/2^30)
     flush(stdout)
 end
 con_stable = [minω_all(Θcon[:, j]) >= cut_margin_THz - 1e-6 for j in 1:n_obs]
