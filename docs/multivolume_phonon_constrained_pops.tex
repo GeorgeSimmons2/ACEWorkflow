@@ -1,0 +1,780 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{booktabs,longtable,array}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=black,citecolor=black,urlcolor=blue]{hyperref}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{algorithm}
+\usepackage{tgpagella}
+
+\usepackage{url}
+\urlstyle{tt}
+\newcommand{\file}[1]{\path{#1}}
+\newcommand{\jl}[1]{\path{#1}}
+\newcommand{\aeq}{a_{\mathrm{eq}}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\dd}{\mathrm{d}}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator{\Real}{Re}
+\DeclareMathOperator{\sgn}{sign}
+
+\captionsetup[algorithm]{labelfont=bf,textfont=bf}
+\newenvironment{algsteps}{\begin{enumerate}[leftmargin=2.2em,itemsep=1pt,topsep=3pt,label=\arabic*.]}{\end{enumerate}}
+
+\title{\bfseries Volume-Resolved Phonon Constraints for Linear ACE Committees\\[2mm]
+\large Mathematics, algorithm, and the code that implements it}
+\author{Model: \texttt{Al\_12\_4\_6A\_2\_} (full dataset, $K=91$ parameters)}
+\date{Generated 27 July 2026 --- repository \file{/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This document sets out, in a form directly translatable into a paper algorithm, the
+constrained-committee method used for \texttt{Al\_12\_4\_6A\_2\_}: how a linear ACE
+potential's parameter vector is fitted under physical constraints, how a POPS
+uncertainty committee is generated from it, and --- the substantive addition --- how
+dynamical-stability constraints are imposed at \emph{several lattice constants} rather
+than one. Every equation is stated in the form actually implemented, and every result is
+attributed to the script and output directory that produced it. Section~\ref{sec:map}
+is the script/result map; Section~\ref{sec:pitfalls} records four failure modes that
+were diagnosed along the way and which any write-up should mention, because three of
+them silently produced plausible-looking but wrong numbers.
+\end{abstract}
+
+\tableofcontents
+
+%=====================================================================
+\section{Scope and the one-sentence summary}
+
+A linear ACE potential is fitted by a quadratic program (QP) whose inequality rows
+encode physics: elastic (Born) stability, a pinned equilibrium lattice constant, and
+positive phonon frequencies throughout the Brillouin zone. A POPS committee is then
+drawn by rejection sampling under the same constraints. The finding this document
+exists to support is:
+
+\begin{quote}
+Imposing phonon stability at the equilibrium lattice constant \emph{alone} is
+insufficient --- constrained members are stable at $\aeq$ yet leave the FCC lattice
+within picoseconds under NPT molecular dynamics. Imposing it on a grid of lattice
+constants spanning the thermal-expansion range fixes this, and yields a physically
+meaningful thermal-expansion coefficient.
+\end{quote}
+
+%=====================================================================
+\section{Notation and the linearity that makes everything work}
+\label{sec:notation}
+
+\subsection{Linear ACE}
+
+For a configuration $R$ of atomic positions, the ACE energy is \emph{linear} in the
+parameter vector $\bm\theta\in\R^{K}$ ($K=91$ here):
+\begin{equation}
+E(R;\bm\theta) \;=\; \sum_{k=1}^{K}\theta_k\,B_k(R) \;=\; \bm B(R)\cdot\bm\theta ,
+\label{eq:ace}
+\end{equation}
+where $B_k$ are the ACE basis functions. This is the single structural fact the entire
+method rests on: because differentiation is linear, \emph{every} derived quantity that
+is a linear or bilinear functional of $E$ inherits an exact affine dependence on
+$\bm\theta$. In particular the force-constant (Hessian) matrix
+\begin{equation}
+\Phi_{a\alpha,b\beta}(\bm\theta)
+=\frac{\partial^2 E}{\partial r_{a\alpha}\,\partial r_{b\beta}}
+=\sum_{k=1}^{K}\theta_k\,\underbrace{\frac{\partial^2 B_k}{\partial r_{a\alpha}\partial r_{b\beta}}}_{\textstyle \Phi^{(k)}_{a\alpha,b\beta}}
+\label{eq:undotted}
+\end{equation}
+splits into $K$ geometry-only tensors $\Phi^{(k)}$. We call $\{\Phi^{(k)}\}$ the
+\emph{undotted Hessian}: it depends on the geometry but not on $\bm\theta$, so it is
+built once per geometry and reused for every committee member. That is what makes a
+full-Brillouin-zone phonon check cheap enough to serve as a rejection-sampling
+predicate.
+
+Implementation: \file{scripts/bandpath_phonon_uq/lib.jl}, functions
+\jl{_site_basis_hessian} (nested \texttt{ForwardDiff} of \jl{evaluate_basis} at site
+level) and \jl{undotted_hessian} (threaded accumulation over atoms, with the four
+$\pm$ blocks per neighbour pair that enforce translational invariance).
+
+\subsection{Design system and preconditioner}
+
+Let $\bm A\in\R^{M\times K}$ be the design matrix (row $m$ = basis evaluation for
+observation $m$), $\bm y\in\R^{M}$ the observations (energies/forces/virials), $\bm W$
+the diagonal weight matrix, and $\bm P$ the diagonal preconditioner supplied by the
+fitting pipeline. Define
+\begin{equation}
+\tilde{\bm A} \;=\; \bm W\bm A\bm P^{-1},\qquad
+\tilde{\bm y} \;=\; \bm W\bm y,\qquad
+\tilde{\bm\theta} \;=\; \bm P\bm\theta ,\qquad
+\lambda = 1/M .
+\label{eq:precond}
+\end{equation}
+All optimisation is carried out in the preconditioned variable $\tilde{\bm\theta}$ and
+mapped back by $\bm\theta=\bm P^{-1}\tilde{\bm\theta}$.
+
+%=====================================================================
+\section{The constrained fit}
+\label{sec:qp}
+
+\subsection{Objective}
+
+In OSQP's convention $\min_{\bm x}\ \tfrac12\bm x^{\!\top}\bm P_{\!\mathrm{qp}}\bm x+\bm q^{\!\top}\bm x$
+subject to $\bm l\le \bm A_{\mathrm{qp}}\bm x\le \bm u$, the code sets
+\begin{equation}
+\bm P_{\!\mathrm{qp}} = \tilde{\bm A}^{\!\top}\tilde{\bm A} + \lambda\,\bm P^{\!\top}\bm P,
+\qquad
+\bm q = -\tilde{\bm A}^{\!\top}\tilde{\bm y},
+\end{equation}
+so that, up to an additive constant, the objective is
+\begin{equation}
+J(\tilde{\bm\theta})
+= \tfrac12\big\|\tilde{\bm A}\tilde{\bm\theta}-\tilde{\bm y}\big\|_2^{2}
+\;+\;\tfrac{\lambda}{2}\big\|\bm P\tilde{\bm\theta}\big\|_2^{2}.
+\label{eq:objective}
+\end{equation}
+
+\paragraph{A subtlety worth stating explicitly in the paper.}
+The regulariser is written in the \emph{preconditioned} variable. Substituting
+$\tilde{\bm\theta}=\bm P\bm\theta$ gives
+$\tfrac{\lambda}{2}\|\bm P^{2}\bm\theta\|^{2}$, i.e.\ the effective Tikhonov prior in
+coefficient space is
+\begin{equation}
+\bm\Gamma_{\mathrm{eff}} \;=\; \bm P^{2},
+\label{eq:gammaeff}
+\end{equation}
+not $\bm P$. This is a property of the implementation, not an accident of notation; if
+the paper reports the prior it should report $\bm P^{2}$.
+
+\subsection{Transporting constraint rows}
+
+A physical constraint is naturally written as a row $\bm g$ acting on the coefficients,
+$\bm g\cdot\bm\theta \ge c$. In the solver variable this becomes
+\begin{equation}
+\bm g\cdot\bm\theta \;=\; \bm g\,\bm P^{-1}\tilde{\bm\theta},
+\end{equation}
+which is why every constraint row appears in the code as \jl{row/P} (right division by
+the diagonal $\bm P$) and the solution is recovered as \jl{P \ r.x}.
+
+%=====================================================================
+\section{The POPS committee}
+\label{sec:pops}
+
+\subsection{Pointwise corrections (the ``naive'' forest)}
+
+Write
+\begin{equation}
+\bm C = \tilde{\bm A}^{\!\top}\tilde{\bm A}+\lambda\bm P^{2},\qquad
+\bm G = \bm C^{-1}\tilde{\bm A}^{\!\top},\qquad
+h_i = \big(\tilde{\bm A}\bm G\big)_{ii},\qquad
+\bm r = \tilde{\bm y}-\tilde{\bm A}\tilde{\bm\theta}_{\mathrm{LSQ}} ,
+\label{eq:levres}
+\end{equation}
+where $h_i$ is the leverage of observation $i$ and $r_i$ its residual. The POPS
+pointwise correction and the corresponding committee member are
+\begin{equation}
+\boxed{\;
+\delta\bm\theta^{(i)} \;=\; \bm P^{-1}\,\bm G_{:,i}\,\frac{r_i}{h_i},
+\qquad
+\bm\theta^{(i)} \;=\; \bm\theta_{\mathrm{LSQ}} + \delta\bm\theta^{(i)} . \;}
+\label{eq:pops}
+\end{equation}
+
+\paragraph{Interpretation (this is the cleanest way to motivate POPS in the paper).}
+The correction is exactly the perturbation that makes the model \emph{interpolate}
+observation $i$. Indeed
+\begin{equation}
+\tilde{\bm A}_{i,:}\big(\bm P\,\delta\bm\theta^{(i)}\big)
+=\tilde{\bm A}_{i,:}\bm G_{:,i}\,\frac{r_i}{h_i}
+= h_i\,\frac{r_i}{h_i}
+= r_i ,
+\label{eq:interp}
+\end{equation}
+so the member's prediction at $i$ moves by precisely the residual there, closing it.
+Each committee member is therefore ``the fit that would have been obtained had
+observation $i$ been reproduced exactly''; the ensemble spread measures how far the fit
+can be pushed by individual data.
+
+Members are selected as the $n_{\mathrm{lev}}=5$ highest-leverage observations, the
+$n_{\mathrm{res}}=10$ largest-$|r|$ observations not already chosen, and
+$n_{\mathrm{rand}}=15$ random others, giving $N=30$ members
+(\jl{Random.seed!(1234)} makes this reproducible).
+
+\subsection{Constrained members}
+
+The constrained analogue replaces \eqref{eq:pops} by a QP that imposes the
+interpolation condition \eqref{eq:interp} as an \emph{equality row} while adding the
+physics rows of Section~\ref{sec:constraints}:
+\begin{equation}
+\begin{aligned}
+\bm\theta^{(i)}_{\mathrm{con}} = \bm P^{-1}\ \argmin_{\tilde{\bm\theta}}\quad & J(\tilde{\bm\theta})\\
+\text{s.t.}\quad
+& \tilde{\bm A}_{i,:}\,\tilde{\bm\theta} = \tilde y_i && \text{(interpolate obs.\ $i$)}\\
+& \big(\bm b'\bm P^{-1}\big)\tilde{\bm\theta} = 0 && \text{(equilibrium at $\aeq$)}\\
+& \bm l_{\mathrm{phys}} \le \bm G_{\mathrm{phys}}\bm P^{-1}\tilde{\bm\theta} \le \bm\infty . &&
+\end{aligned}
+\label{eq:conqp}
+\end{equation}
+The constrained \emph{mean} model $\bm\theta_{\mathrm{mean}}$ is the same program with
+the interpolation row removed.
+
+%=====================================================================
+\section{The physical constraint rows}
+\label{sec:constraints}
+
+\subsection{Equation of state: pinning the equilibrium}
+
+Let $\bm b(a)=\bm B\big(\text{reference cell at lattice constant }a\big)$, so that the
+per-cell energy is $E(a;\bm\theta)=\bm b(a)\cdot\bm\theta$ --- again linear in
+$\bm\theta$. With $\bm b'=\dd\bm b/\dd a|_{\aeq}$ and
+$\bm b''=\dd^{2}\bm b/\dd a^{2}|_{\aeq}$ (both by \texttt{ForwardDiff}):
+\begin{equation}
+\bm b'\cdot\bm\theta = 0 \quad\text{(equality)},
+\qquad
+\bm b''\cdot\bm\theta \ge \varepsilon,\quad \varepsilon=10^{-9}.
+\label{eq:eos}
+\end{equation}
+The first states that $\aeq$ is a stationary point of the energy--volume curve; the
+second that it is a minimum. Together they pin every committee member's equilibrium
+lattice constant to the common reference $\aeq$, which is what makes a \emph{fixed}
+reference geometry legitimate for the phonon rows.
+
+\subsection{Born elastic stability}
+
+The Voigt elastic operator is again linear in $\bm\theta$:
+\begin{equation}
+C_{ij}(\bm\theta)=\sum_{k}\theta_k H^{\mathrm{el}}_{ij,k},
+\qquad
+H^{\mathrm{el}}_{ij,k}=\frac{\partial^{2}B_k}{\partial\varepsilon_i\,\partial\varepsilon_j}\bigg|_{\bm\varepsilon=0},
+\end{equation}
+computed by \jl{elastic_hessian_basis} in \file{src/Elasticity/get_hessian.jl}. The
+three cubic Born criteria are imposed as rows
+\begin{equation}
+C_{44}\ge 0.1,\qquad C_{11}-C_{12}\ge 1.0,\qquad C_{11}+2C_{12}\ge 0.1 ,
+\label{eq:born}
+\end{equation}
+in the raw (eV, per reference cell) units of $H^{\mathrm{el}}$; conversion to GPa uses
+$160.2176621/|\det \bm L_0|$ and is applied only for reporting. Stacking with
+\eqref{eq:eos} gives the matrix \jl{born_rows} with lower bounds
+\jl{born_lower = [0.1, 1.0, 0.1, 1e-9]}.
+
+\subsection{Phonons: the dynamical matrix is affine in \texorpdfstring{$\bm\theta$}{theta}}
+
+From the undotted Hessian \eqref{eq:undotted}, the Bloch transform to the primitive-cell
+dynamical matrix is a fixed linear map, so
+\begin{equation}
+\boxed{\;\bm D(\bm q;\bm\theta) \;=\; \sum_{k=1}^{K}\theta_k\,\bm D^{(k)}(\bm q)\;}
+\label{eq:Dlinear}
+\end{equation}
+with, for primitive-cell atoms $i,j$ and supercell atoms $l$,
+\begin{equation}
+D^{(k)}_{i\alpha,j\beta}(\bm q)
+=\frac{1}{\sqrt{m_i m_j}}
+\sum_{\substack{l\,:\,\mathrm{s2p}(l)=j}}
+\Phi^{(k)}_{\,\mathrm{p2s}(i)\alpha,\;l\beta}\;
+e^{\,\mathrm{i}\,\bm q\cdot\bm R_l},
+\qquad
+\bm R_l = \mathrm{MIC}\big(\bm L(\bm f_l-\bm f_j)\big),
+\label{eq:bloch}
+\end{equation}
+where $\mathrm{MIC}$ is the minimum-image convention applied in \emph{supercell}
+fractional coordinates (wrapping to $(-\tfrac12,\tfrac12]$), and $\bm D$ is
+Hermitised afterwards. Implementation: \jl{precompute_force_constants} and
+\jl{dynamical_matrix_from_fc} in \file{src/Phonons/phonon_bands.jl}; the per-basis
+assembly into $\{\bm D^{(k)}\}$ over the whole band path is \jl{bandpath_Dk} in
+\file{scripts/bandpath_phonon_uq/lib.jl}.
+
+Frequencies follow from the eigenvalues $\mu_\nu$ of $\bm D$:
+\begin{equation}
+\omega_\nu(\bm q;\bm\theta) \;=\; \sgn(\mu_\nu)\sqrt{|\mu_\nu|}\;\cdot f,
+\qquad
+f=\frac{1}{2\pi\times10^{12}}\sqrt{\frac{e}{\text{\AA}^{2}\,u}}\approx 15.633\ \mathrm{THz},
+\label{eq:freq}
+\end{equation}
+the signed square root being the standard device for displaying imaginary (unstable)
+modes as negative frequencies.
+
+\paragraph{Stability metric.} Acoustic branches vanish at $\Gamma$, so the scalar used
+throughout is the minimum \emph{non-acoustic} frequency over the sampled path:
+\begin{equation}
+m(\bm\theta) \;=\; \min_{\bm q\,:\,\|\bm q\|\ge q_\Gamma}\ \min_{\nu}\ \omega_\nu(\bm q;\bm\theta),
+\qquad q_\Gamma = 5\times10^{-2},
+\label{eq:minfreq}
+\end{equation}
+implemented as \jl{min_freq_stable}. The path is
+$\Gamma\!\to\!X\!\to\!U\!\to\!L\!\to\!\Gamma\!\to\!K$ with per-segment sampling
+\jl{N_per_seg = [20,20,20,20,60]} --- the final $\Gamma\!\to\!K$ leg is sampled
+three times more densely because the soft modes concentrate there and a sharp dip
+between $q$-points would otherwise escape both the constraint and the check. Per-segment
+sampling required extending \jl{fcc_band_path} in \file{src/Phonons/phonon_bands.jl} to
+accept a vector.
+
+%=====================================================================
+\section{Cutting-plane repair}
+\label{sec:cuts}
+
+Requiring $\min_\nu\mu_\nu(\bm q;\bm\theta)\ge\omega_{\mathrm{cut}}^{2}$ is not a linear
+constraint on $\bm\theta$. It is, however, the infimum of linear constraints. For any
+fixed unit vector $\bm e$, the Rayleigh quotient
+\begin{equation}
+\bm e^{\dagger}\bm D(\bm q;\bm\theta)\,\bm e
+\;=\;\sum_{k}\theta_k\,\bm e^{\dagger}\bm D^{(k)}(\bm q)\,\bm e
+\;=\;\bm g(\bm q,\bm e)\cdot\bm\theta,
+\qquad
+g_k(\bm q,\bm e) = \Real\!\big[\bm e^{\dagger}\bm D^{(k)}(\bm q)\bm e\big]
+\label{eq:cutrow}
+\end{equation}
+is an \emph{exact linear functional} of $\bm\theta$ --- no finite differences, no
+displacement amplitude. This is \jl{cut_row(iq,e,bp)}, implemented as
+$\mathrm{vec}(\bar{\bm e}\bm e^{\!\top})^{\!\top}\bm B_q$, which reproduces
+$\bm e^{\dagger}\bm D^{(k)}\bm e$ exactly under column-major \texttt{vec}.
+
+Because $\bm e^{\dagger}\bm D\bm e\ \ge\ \mu_{\min}(\bm D)$ for every unit $\bm e$, a
+single row \eqref{eq:cutrow} is \emph{necessary but not sufficient}: enforcing it at the
+current softest eigenvector does not guarantee the new $\bm\theta$ has
+$\mu_{\min}\ge\omega_{\mathrm{cut}}^{2}$, because the eigenvector rotates as
+$\bm\theta$ moves. The remedy is the standard cutting-plane loop: re-diagonalise, add
+rows for whatever is still soft, re-solve, iterate. Convergence is declared when no soft
+mode remains; \jl{max_cuts = 40} caps the iterations.
+
+\begin{equation}
+\omega^{2}_{\mathrm{cut}} = \left(\frac{\omega^{\mathrm{THz}}_{\mathrm{cut}}}{f}\right)^{2},
+\qquad \omega^{\mathrm{THz}}_{\mathrm{cut}} = 0.15\ \mathrm{THz}.
+\end{equation}
+
+Note the asymmetry between the two stages, which the paper should state: the
+\emph{repair} stage imposes $\bm b'\cdot\bm\theta=0$ exactly (an equality,
+$l=u=0$), whereas the \emph{rejection} stage cannot --- an equality has zero acceptance
+probability under a continuous proposal --- and instead imposes the band
+\eqref{eq:band} below.
+
+%=====================================================================
+\section{Hypercube proposal and rejection sampling}
+\label{sec:sampling}
+
+Collect the $N$ constrained corrections as rows of
+$\bm\Delta\in\R^{N\times K}$, $\bm\Delta_{i,:}=\bm\theta^{(i)}_{\mathrm{con}}-\bm\theta_{\mathrm{mean}}$.
+Diagonalise the second-moment matrix and keep the numerically supported directions,
+\begin{equation}
+\bm\Delta^{\!\top}\bm\Delta = \bm V\bm\Lambda\bm V^{\!\top},
+\qquad
+\text{keep }j:\ \Lambda_{jj} > 10^{-8}\max_l\Lambda_{ll},
+\end{equation}
+project the corrections onto the retained eigenbasis, $\bm\Pi=\bm\Delta\bm V$, and take
+the axis-aligned bounding box
+\begin{equation}
+\ell_j=\min_i \Pi_{ij},\qquad u_j=\max_i\Pi_{ij}
+\label{eq:box}
+\end{equation}
+(the \jl{percentile_clipping = 0} case of \jl{hypercube}, i.e.\ the \emph{unclipped}
+box: the feasible-set geometry is imposed exactly by rejection rather than approximated
+by shrinking the proposal). Proposals are
+\begin{equation}
+\bm u\sim\mathcal{U}[0,1]^{d},\qquad
+\bm\theta = \bm\theta_{\mathrm{mean}} + \bm V\big(\bm\ell + (\bm u_{\!\mathrm{b}}-\bm\ell)\odot\bm u\big),
+\end{equation}
+and are accepted iff all of the following hold (\jl{rejection_sample_hypercube} with a
+predicate, \file{src/POPS/POPSRegression.jl}):
+\begin{align}
+&\text{(i) Born rows \eqref{eq:born} satisfied;}\notag\\[2pt]
+&\text{(ii)}\quad
+\frac{\big|\bm b'\cdot(\bm\theta-\bm\theta_{\mathrm{mean}})\big|}{\bm b''\cdot\bm\theta_{\mathrm{mean}}}\ \le\ 0.1;
+\label{eq:band}\\[2pt]
+&\text{(iii)}\quad m_v(\bm\theta)\ \ge\ \omega^{\mathrm{THz}}_{\mathrm{cut}}-10^{-6}
+\quad\text{for every volume }v. \notag
+\end{align}
+
+\paragraph{Reading condition \eqref{eq:band}.} To first order the shift in a member's
+equilibrium lattice constant is
+$\Delta \aeq \simeq -\,(\dd E/\dd a)/(\dd^{2}E/\dd a^{2})
+= -\,\bm b'\!\cdot\!\bm\theta\,/\,\bm b''\!\cdot\!\bm\theta$.
+Condition \eqref{eq:band} is therefore, to leading order, the statement
+$|\Delta \aeq|\le 0.1\,$\AA: a sampled member's equilibrium may drift by at most
+$0.1$\,\AA{} from the reference. This is the continuous relaxation of the equality
+$\bm b'\cdot\bm\theta=0$ used in the repair stage.
+
+%=====================================================================
+\section{The multi-volume extension}
+\label{sec:multivol}
+
+Everything above is stated at a single reference geometry. The extension is to impose
+condition (iii) on a grid of lattice constants:
+\begin{equation}
+\boxed{\;
+a_v = s_v\,\aeq,\qquad
+s_v\in\{1.00,\,1.02,\,1.04,\,1.06,\,1.08,\,1.10\},\qquad v=1,\dots,6 .\;}
+\label{eq:volgrid}
+\end{equation}
+Because $\Phi^{(k)}$ depends on geometry, each $a_v$ requires its \emph{own} undotted
+Hessian build and its own $\{\bm D^{(k,v)}(\bm q)\}$; these are cached to disk as
+\file{results/undotted_Hbasis_4x4x4_a<a>.jls} ($\approx 429$\,MB each at
+$4\times4\times4$, $\approx$ 1--2\,min to build on 20 threads).
+
+Three points of design, all of which the paper should state:
+\begin{enumerate}[leftmargin=1.6em,itemsep=2pt]
+\item \textbf{$\aeq$ remains the reference geometry.} The equation-of-state rows
+\eqref{eq:eos} and the Born rows \eqref{eq:born} are still evaluated at $\aeq$ only. The
+extra volumes add stability requirements; they do not move the equilibrium.
+\item \textbf{The cutting plane pools volumes.} Each iteration collects soft modes from
+\emph{all} $v$ and appends one row \eqref{eq:cutrow} per triple $(v,\bm q,\nu)$. In
+practice this produced a median of $864$ and a maximum of $1605$ cut rows per member.
+\item \textbf{The predicate short-circuits, softest volume first.} The volumes are
+tested in ascending order of $m_v(\bm\theta_{\mathrm{mean}})$, so most rejections are
+paid for at one volume rather than six.
+\end{enumerate}
+
+The constrained fit for member $i$ therefore becomes the program
+\begin{equation}
+\begin{aligned}
+\min_{\tilde{\bm\theta}}\quad & J(\tilde{\bm\theta})\\
+\text{s.t.}\quad
+& \tilde{\bm A}_{i,:}\tilde{\bm\theta}=\tilde y_i,\qquad
+  \bm b'\bm P^{-1}\tilde{\bm\theta}=0,\\
+& C_{44}\ge0.1,\quad C_{11}-C_{12}\ge1.0,\quad C_{11}+2C_{12}\ge0.1,\quad \bm b''\!\cdot\!\bm\theta\ge\varepsilon,\\
+& \bm g(\bm q,\bm e)\,\bm P^{-1}\tilde{\bm\theta}\ \ge\ \omega_{\mathrm{cut}}^{2}
+  \qquad \forall\,(v,\bm q,\bm e)\in\mathcal{S}^{(t)} ,
+\end{aligned}
+\label{eq:fullqp}
+\end{equation}
+where $\mathcal{S}^{(t)}$ is the accumulated cut set after $t$ iterations.
+
+\begin{algorithm}[t]
+\caption{Volume-resolved constrained POPS committee}
+\begin{algsteps}
+\item \textbf{Reference geometry.} Relax $\aeq$ from the mean model. Build $\bm b'$,
+      $\bm b''$, $H^{\mathrm{el}}$ at $\aeq$; assemble \eqref{eq:eos}, \eqref{eq:born}.
+\item \textbf{Volume grid.} For $v=1..6$ with $a_v$ from \eqref{eq:volgrid}: build the
+      undotted Hessian $\{\Phi^{(k,v)}\}$ and the band-path operators
+      $\{\bm D^{(k,v)}(\bm q)\}$. Cache to disk.
+\item \textbf{Constrained mean.} Solve \eqref{eq:fullqp} without the interpolation row;
+      loop: collect soft modes over all $v$, append cut rows, re-solve, until none
+      remain or \jl{max_cuts}.
+\item \textbf{Proposal cloud.} Select $N=30$ observations (leverage / residual /
+      random). For each, solve \eqref{eq:fullqp} with its interpolation row and run the
+      same multi-volume cutting-plane loop.
+\item \textbf{Proposal box.} Form $\bm\Delta$ from the repaired members, diagonalise,
+      take the unclipped bounding box \eqref{eq:box}.
+\item \textbf{Rejection sample.} Draw uniformly in the box; accept iff Born
+      \eqref{eq:born}, band \eqref{eq:band}, and $m_v\ge\omega_{\mathrm{cut}}$ for
+      \emph{all} $v$ (softest first). Repeat to $N$ members.
+\item \textbf{Verify and export.} Recompute $m_v$ for every member at every volume;
+      write the member $\times$ volume table.
+\end{algsteps}
+\end{algorithm}
+
+%=====================================================================
+\section{NPT validation and the FCC-survival test}
+\label{sec:npt}
+
+A committee member is validated by NPT molecular dynamics at zero pressure (Langevin
+thermostat + Monte-Carlo barostat, Molly.jl), $4\times4\times4$ FCC supercell
+($256$ atoms), $T\in\{300,500,700,900\}$\,K, $10^{4}$ equilibration $+\ 2\times10^{4}$
+production steps at $\Delta t=1$\,fs.
+
+\subsection{Lattice constant and expansion coefficient}
+
+With per-frame volumes $V_f$ over production frames $\mathcal{P}$ and $N_{\mathrm{sup}}=4$,
+\begin{equation}
+a(T)=\frac{1}{|\mathcal{P}|}\sum_{f\in\mathcal{P}}\frac{V_f^{1/3}}{N_{\mathrm{sup}}},
+\qquad
+\alpha=\frac{1}{a_0}\frac{\dd a}{\dd T}\bigg|_{\mathrm{lin.fit}} .
+\label{eq:alpha}
+\end{equation}
+Because the box volume changes under NPT, the RDF, MSD and coordination analyses all use
+each frame's \emph{own} box for the minimum-image convention --- using a fixed box is a
+silent error under a barostat.
+
+\subsection{The FCC-survival criterion}
+
+The essential guard. Define the mean coordination within a cutoff $r_c=3.3$\,\AA,
+\begin{equation}
+\langle Z\rangle=\frac{1}{N}\sum_{i=1}^{N}\Big|\{\,j\ne i:\ r_{ij}<r_c\,\}\Big| ,
+\qquad
+\text{FCC declared iff }\ \langle Z\rangle\ \ge\ 12-\tau,\quad \tau=1 ,
+\label{eq:fcc}
+\end{equation}
+alongside the median nearest-neighbour distance, whose FCC value is $a/\sqrt2$. Perfect
+FCC gives $\langle Z\rangle=12$; thermal disorder at 700\,K gives $11.5$; the
+transformed phase observed here gives $\approx 9.1$.
+
+\paragraph{Why the \emph{mean} and not the maximum.} An earlier version of the analysis
+logged only $\max_i Z_i$, which remains pinned at $12$ long after the lattice has
+transformed, and consequently reported ``$6.3\%$ thermal expansion'' for a cell that was
+no longer FCC. $\alpha$ in \eqref{eq:alpha} is fitted \emph{only} over temperatures
+satisfying \eqref{eq:fcc}; temperatures that fail are plotted but excluded.
+
+%=====================================================================
+\section{Script and result map}
+\label{sec:map}
+
+All paths are relative to \file{/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow}.
+
+\subsection{Shared machinery}
+
+\begin{center}\small
+\begin{tabular}{@{}p{0.44\textwidth}p{0.50\textwidth}@{}}
+\toprule
+\textbf{Path} & \textbf{Provides} \\
+\midrule
+\file{scripts/bandpath_phonon_uq/lib.jl} &
+Undotted Hessian (\jl{undotted_hessian}, \jl{undotted_Hbasis} with disk cache),
+band-path operators (\jl{bandpath_Dk}), $\omega$ and stability
+(\jl{bands}, \jl{min_freq_stable}, \jl{soft_modes}), cutting-plane row
+(\jl{cut_row}), committee band plots, test-set coverage. \\[3pt]
+\file{src/Phonons/phonon_bands.jl} &
+$\bm D(\bm q)$ from force constants (Eq.~\ref{eq:bloch}), \jl{FREQ_THz}
+(Eq.~\ref{eq:freq}), high-symmetry paths with per-segment sampling, \jl{bulk_prim_super}. \\[3pt]
+\file{src/POPS/POPSRegression.jl} &
+\jl{corrections} (Eq.~\ref{eq:pops}), \jl{hypercube} (Eq.~\ref{eq:box}),
+\jl{rejection_sample_hypercube} (predicate form). \\[3pt]
+\file{src/Elasticity/get_hessian.jl} &
+\jl{elastic_hessian_basis} (Born rows), \jl{relax_lattice_constant} ($\aeq$). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Production runs: script \texorpdfstring{$\to$}{->} output directory}
+
+Output directories are under \file{models/Al_12_4_6A_2_/results/}.
+
+\begin{center}\small
+\begin{tabular}{@{}p{0.40\textwidth}p{0.26\textwidth}p{0.28\textwidth}@{}}
+\toprule
+\textbf{Script} & \textbf{Output directory} & \textbf{Status / role} \\
+\midrule
+\file{scripts/uq/bandpath_committee_undotted_Al_12_4_6A_2.jl} &
+\file{bandpath_undotted/} &
+Original committee, $N_{\mathrm{cell}}=3$. \textbf{Superseded} --- see
+Section~\ref{sec:pitfalls}(a). \\[3pt]
+
+\file{scripts/uq/bandpath_committee_undotted_Al_12_4_6A_2_ncell4_densek.jl} &
+\file{bandpath_undotted_ncell4_densek/} &
+Single-volume committee, $N_{\mathrm{cell}}=4$, dense $\Gamma\!\to\!K$. The
+``constrained at $\aeq$ only'' baseline. \\[3pt]
+
+\file{scripts/uq/bandpath_committee_undotted_Al_12_4_6A_2_multivolume.jl} &
+\file{bandpath_undotted_multivolume/} &
+\textbf{The method of this document}: six volumes, Eq.~\eqref{eq:volgrid}. \\[3pt]
+
+\file{scripts/uq/npt_thermal_expansion_worst_member_Al_12_4_6A_2.jl} &
+\file{npt_thermal_expansion_naive_worst_member/}, \file{npt_thermal_expansion_constrained_worst_member/}, \file{npt_thermal_expansion_worst_member/} &
+Single-volume NPT. One script, run three times with \jl{npt_vector},
+\jl{committee_subdir}, \jl{N_cell_fc} and \jl{outdir} edited between runs --- see the
+provenance note below. \\[3pt]
+
+\file{scripts/uq/npt_multivolume_member_Al_12_4_6A_2.jl} &
+\file{npt_multivolume_softest/} &
+\textbf{The validation of this document}: NPT on the multi-volume committee, with the
+FCC-survival test \eqref{eq:fcc}. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Provenance note (important, and easy to get wrong).}
+\file{npt_thermal_expansion_worst_member_Al_12_4_6A_2.jl} carries its configuration as
+top-of-file constants, so the three output directories above correspond to three
+\emph{different} configurations of the same file, not three scripts. The header line of
+each \file{thermal_expansion_summary.csv} records which member was used, e.g.\
+\texttt{\char35\ npt\_member=naive-worst ... con\_soft\_source=repaired[20]}. Read that header before
+attributing any figure. In particular, the ``constrained'' curve in the earlier
+\file{bands_before_after_constraining} figures came from a \emph{repaired} member, not a
+rejection sample, because the selection is $\argmin$ over the union
+repaired $\cup$ rejection.
+
+\subsection{Diagnostic and supporting scripts}
+
+\begin{center}\small
+\begin{tabular}{@{}p{0.44\textwidth}p{0.50\textwidth}@{}}
+\toprule
+\textbf{Script} & \textbf{What it establishes} \\
+\midrule
+\file{scripts/uq/diagnose_stale_cache_Al_12_4_6A_2.jl} &
+Rebuilds the undotted Hessian cache from scratch and re-checks assembly
+($\Delta\sim7\times10^{-13}$). Ruled out cache staleness as the cause of the negative
+frequencies. \\[3pt]
+\file{scripts/uq/bands_individual_hessian_naive_vs_constrained_Al_12_4_6A_2.jl} &
+Band plots where \emph{each} member gets its own from-scratch Hessian
+(22 Hessians), rather than the shared reference-geometry one.
+$\to$ \file{bands_individual_hessian/}. \\[3pt]
+\file{scripts/uq/check_worst_naive_native4_Al_12_4_6A_2.jl} &
+Draws naive hypercube samples and validates each with a native Hessian on its
+\emph{own} relaxed $4\times4\times4$ cell; saves the first genuinely unstable
+$\bm\theta$. $\to$ \file{npt_worst_naive_native4/}. \\[3pt]
+\file{scripts/uq/npt_worst_naive_native4_Al_12_4_6A_2.jl} &
+NPT on that vector, with all phonon checks done natively. \\[3pt]
+\file{scripts/bandpath_phonon_uq/replot_and_calibration.jl} &
+Publication re-plots and committee calibration. $\to$ \file{bandpath_phonon_uq/}
+(note: this run saved figures but \emph{no} committee CSVs). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Output files of the multi-volume run}
+
+\begin{center}\small
+\begin{tabular}{@{}p{0.42\textwidth}p{0.52\textwidth}@{}}
+\toprule
+\textbf{File} (in \file{bandpath_undotted_multivolume/}) & \textbf{Contents} \\
+\midrule
+\file{committee_repaired.csv} & $30\times K$; the QP-repaired members, Eq.~\eqref{eq:fullqp}. \\
+\file{committee_rejection.csv} & $30\times K$; the rejection-sampled committee. \\
+\file{theta_mean.csv} & the constrained mean model. \\
+\file{minomega_by_volume_naive.csv} etc. & member $\times$ volume table of $m_v$, Eq.~\eqref{eq:minfreq}. \\
+\file{minomega_vs_volume.pdf} & the stability-vs-volume figure. \\
+\file{bands_naive_v1.04.pdf} etc. & band structures at each $s_v$, shared $y$-axis. \\
+\file{theta_npt_softest.csv}, \file{npt_candidates.csv} & members handed to the NPT run. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%=====================================================================
+\section{Results}
+\label{sec:results}
+
+\subsection{Committee stability across the volume grid}
+
+Minimum over the 30 members of $m_v$, in THz
+(\file{bandpath_undotted_multivolume/minomega_by_volume_*.csv}):
+
+\begin{center}\small
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+$s_v$ & $1.00$ & $1.02$ & $1.04$ & $1.06$ & $1.08$ & $1.10$ \\
+\midrule
+naive POPS      & $-8.656$ & $-10.920$ & $-11.471$ & $-10.812$ & $-9.043$ & $-9.077$ \\
+rejection (constrained) & $+0.252$ & $+0.175$ & $+0.150$ & $+0.166$ & $+0.150$ & $+0.153$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+Members unstable ($m_v<-0.05$) at \emph{any} volume: constrained $0/30$, naive $30/30$.
+Rejection acceptance was $13.3\%$ ($226$ proposals for $30$ members); the binding
+volumes were $s=1.10$ ($131$ rejections) and $s=1.04$ ($55$), with $s=1.06$ rejecting
+only $2$. \textbf{The soft mode is not monotonic in volume} --- constraining only the
+endpoints would have missed the $s=1.04$ dip. Total wall time $21$ minutes on 20 threads.
+
+\subsection{NPT validation}
+
+Member \jl{rejection[18]} ($\min_v m_v=+0.150$\,THz), from
+\file{npt_multivolume_softest/thermal_expansion_summary.csv}:
+
+\begin{center}\small
+\begin{tabular}{@{}rrrrrrc@{}}
+\toprule
+$T$ (K) & $a$ (\AA) & $\Delta a/a_0$ & $m(\bm\theta)$ (THz) & $\langle Z\rangle$ & med.\ NN (\AA) & FCC? \\
+\midrule
+$0$   & $4.0449$ & ---       & $+0.288$ & $12.00$ & $2.860$ & yes \\
+$300$ & $4.0779$ & $+0.81\%$ & $+0.302$ & $11.99$ & $2.726$ & yes \\
+$500$ & $4.0996$ & $+1.35\%$ & $+0.290$ & $11.85$ & $2.689$ & yes \\
+$700$ & $4.1204$ & $+1.87\%$ & $+0.280$ & $11.51$ & $2.659$ & yes \\
+$900$ & $4.3121$ & $+6.61\%$ & $+0.208$ & $9.12$  & $2.498$ & \textbf{no} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Fitting \eqref{eq:alpha} on the three FCC temperatures gives
+$\alpha = 26.3\times10^{-6}\,\mathrm{K^{-1}}$ with $R^{2}=0.99988$; the leave-one-out
+range is $[25.8,\,26.8]\times10^{-6}$. For comparison, aluminium's experimental $\alpha$
+is $23.1\times10^{-6}$ at $300$\,K rising to $\approx26\times10^{-6}$ by $700$\,K, so a
+$300$--$700$\,K fit should be compared against $\approx26$, not against the room-
+temperature value.
+
+\begin{center}\small
+\begin{tabular}{@{}lrrc@{}}
+\toprule
+Run & $\alpha$ ($10^{-6}\mathrm{K^{-1}}$) & leave-one-out & FCC temps \\
+\midrule
+naive worst, single-volume        & $41.46$ & $[34.4,\,67.9]$ & $0/4$ \\
+constrained softest, single-volume& $18.95$ & $[14.8,\,31.7]$ & $0/4$ \\
+\textbf{constrained softest, six-volume} & $\bm{26.31}$ & $\bm{[25.8,\,26.8]}$ & $\bm{3/4}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{The 900\,K failure is of a different kind.}
+At $900$\,K the lattice leaves FCC, but $a(900\,\mathrm{K})=4.3121$\,\AA{} $=1.066\,\aeq$
+lies \emph{inside} the constrained grid \eqref{eq:volgrid}, and the phonon spectrum
+there is \emph{positive}, $m=+0.208$\,THz. The transition therefore occurs at a geometry
+where the model is harmonically stable: it is a finite-amplitude, thermally activated
+transition to a competing minimum, not a dynamical instability. Harmonic constraints of
+the form \eqref{eq:cutrow} cannot address it by construction. ($900$\,K is also $96\%$
+of aluminium's melting point, $933$\,K.)
+
+\paragraph{The natural next constraint.} Because $E$ is linear in $\bm\theta$
+\eqref{eq:ace}, the requirement that FCC lie below a specific competing structure
+$R_{\mathrm{c}}$ is exactly \emph{one} linear row,
+\begin{equation}
+\big(\bm B(R_{\mathrm{c}})-\bm B(R_{\mathrm{FCC}})\big)\cdot\bm\theta \;>\; 0 ,
+\label{eq:competing}
+\end{equation}
+per atom, requiring only two basis evaluations and no Hessian. A relaxed frame of the
+competing phase is available in
+\file{npt_multivolume_softest/T900K/md_trajectory.extxyz}. This is untested.
+
+%=====================================================================
+\section{Four pitfalls that produced plausible but wrong numbers}
+\label{sec:pitfalls}
+
+Each of these was diagnosed during development and each, while active, produced output
+that looked reasonable. They are worth a methods paragraph.
+
+\paragraph{(a) Supercell too small for the cutoff.}
+With a $6$\,\AA{} model cutoff, a $3\times3\times3$ FCC supercell has box half-width
+$\approx6.07$\,\AA{} $\approx$ the cutoff, so an atom interacts with its own periodic
+image and zone-boundary phonons are aliased. Converged values require
+$N_{\mathrm{cell}}\ge4$. The effect is large and not a small correction: one member gave
+$+0.150$\,THz at $N_{\mathrm{cell}}=3$ and $-5.199$\,THz at $N_{\mathrm{cell}}=4$ and
+$5$. \emph{All} phonon numbers computed at $N_{\mathrm{cell}}=3$ are unreliable,
+including those in \file{results/bandpath_undotted/}. Diagnostic:
+\file{scripts/uq/phonon_pipeline_ncell_diagnosis_Al_12_4_6A_2.jl}. A cheap guard is to
+assert $N_{\mathrm{cell}}\,a/2 >$ cutoff.
+
+\paragraph{(b) Fixed-geometry checks applied to unpinned vectors.}
+The band-path operators $\{\bm D^{(k)}\}$ are built at one geometry. This is valid for
+constrained members precisely because $\bm b'\cdot\bm\theta=0$ pins their equilibrium
+there --- but \emph{not} for naive POPS vectors, whose own relaxed $a$ differs. Naive
+members must be checked with a Hessian built at their own relaxed lattice constant
+(\file{scripts/uq/check_worst_naive_native4_Al_12_4_6A_2.jl}).
+
+\paragraph{(c) Maximum coordination as a crystallinity test.}
+$\max_i Z_i$ stays at $12$ in a transformed cell; only $\langle Z\rangle$ falls. Using
+the maximum caused a transformation ($\langle Z\rangle:12\to9.5$, NN
+$2.86\to2.58$\,\AA, $\Delta E\approx-0.18$\,eV/atom) to be reported as thermal
+expansion. See Eq.~\eqref{eq:fcc}.
+
+\paragraph{(d) Fitting $\alpha$ across a phase change.}
+Because $\alpha$ is a slope, a constant offset from a transformation cancels out of it,
+so a fit over transformed points can look plausible. The single-volume run's
+$\alpha=18.95\times10^{-6}$ was of this kind: superficially close to experiment, but
+fitted entirely on non-FCC data and unstable to refitting (leave-one-out
+$[14.8,\,31.7]$). Quote leave-one-out ranges, and fit only FCC points.
+
+%=====================================================================
+\section{Reproducing}
+
+\begin{verbatim}
+cd /storage/astro2/phupfb/PhD/acestuff/ACEWorkflow
+JID=$(sbatch --parsable scripts/uq/run_committee_multivolume.slurm)
+sbatch --dependency=afterok:$JID scripts/uq/run_npt_multivolume.slurm
+\end{verbatim}
+
+\noindent
+Both are \texttt{hmem}, 20 tasks. Observed wall times: committee $21$\,min, NPT
+$4$\,h\,$27$\,min. The committee job builds five new $\approx429$\,MB Hessian caches
+($\aeq$ is reused from the single-volume run). Determinism comes from
+\jl{Random.seed!(1234)} in both scripts.
+
+\paragraph{Two open items.}
+(i) Test-set coverage for the multi-volume committee was $48.1\%$ (energy RMSE
+$0.972$\,eV); the corresponding single-volume figure was not retained, so whether the
+tighter constraints cost calibration is \emph{not yet established}.
+(ii) The committee sits on the constraint boundary --- the softest member has
+$\min_v m_v = +0.1503$\,THz against $\omega^{\mathrm{THz}}_{\mathrm{cut}}=0.15$, and the
+median member $+0.1586$ --- so \jl{:softest} and \jl{:median} are effectively the same
+vector. Members with genuine headroom require a larger $\omega_{\mathrm{cut}}$.
+
+\end{document}
