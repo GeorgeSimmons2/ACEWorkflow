@@ -39,6 +39,13 @@ include(joinpath(@__DIR__, "..", "bandpath_phonon_uq", "lib.jl"))
 using SparseArrays, OSQP, Random, Serialization
 Random.seed!(1234)
 
+# Julia BLOCK-BUFFERS stdout when it is not a TTY, so under SLURM a long job writes
+# nothing to its .log until the buffer fills or the process exits — a ~9 h job would
+# appear dead.  Background flusher for everything, plus explicit flushes after each
+# milestone below (the background task cannot run while Threads.@threads holds the
+# main thread, so the explicit ones are the guaranteed path).
+@async while true; flush(stdout); flush(stderr); sleep(5); end
+
 element        = :Al
 dataset        = ""
 a_experimental = nothing
@@ -68,11 +75,13 @@ M = size(Ap, 1)
 outdir = "$(result.dir)/results/allpoints_multivolume"; mkpath(outdir)
 @printf("Model %s: %d params, %d observations, %d threads.  Outputs → %s\n",
         result.name, n_params, M, Threads.nthreads(), outdir)
+flush(stdout)
 
 # ── reference geometry, Born + a_eq rows (all at a_eq) ──────────────────────
 a_mean = ACEWorkflow.relax_lattice_constant(model, element)
 a_eq   = isnothing(a_experimental) ? a_mean : a_experimental
 @printf("a_eq = %.5f Å\n", a_eq)
+flush(stdout)
 sys0 = ACEWorkflow.Elasticity.reference_system(element; a=a_eq)
 L0   = ustrip.(ACEWorkflow.Elasticity.lattice_matrix(sys0.cell.cell_vectors)); eV_to_GPa = 160.2176621/abs(det(L0))
 H_el = elastic_hessian_basis(model; element=element, a=a_eq)
@@ -92,6 +101,7 @@ bps_any = Vector{Any}(undef, length(a_list))
 for (v, a) in enumerate(a_list)
     @printf("  [%d/%d] a = %.5f Å (%.0f%% of a_eq)\n", v, length(a_list), a, 100*vol_scales[v])
     bps_any[v] = bandpath_Dk(result, model, element, a, N_cell_fc; N_per_seg=N_per_seg)
+    flush(stdout)
     GC.gc()
 end
 bps  = convert(Vector{typeof(bps_any[1])}, bps_any)
@@ -153,6 +163,7 @@ end
 @printf("  mean min ω by volume: %s THz\n", string(round.(minω_vol(θ_mean); digits=3)))
 check_order = sortperm(minω_vol(θ_mean))
 @printf("  predicate volume order (softest first): %s\n", string(round.(vol_scales[check_order]; digits=2)))
+flush(stdout)
 
 # ── Stage 2 ★: NAIVE cloud for ALL observations (closed form) ───────────────
 println("\n── Stage 2: naive POPS cloud over ALL observations ─────────────────")
@@ -168,12 +179,14 @@ obs  = kept[1:obs_stride:end]; n_obs = length(obs)
 @printf("  observations used: %d (stride %d over the kept set)\n", n_obs, obs_stride)
 @printf("  leverage of kept set: min %.4g, median %.4g, max %.4g\n",
         minimum(leverage[kept]), median(leverage[kept]), maximum(leverage[kept]))
+flush(stdout)
 naive_deltas = Matrix{Float64}(undef, n_obs, n_params)
 for (j, i) in enumerate(obs)
     naive_deltas[j, :] = P \ (AtX[:, i] .* (residual[i]/leverage[i]))
 end
 @printf("  naive cloud: ‖δθ‖ median %.3g, max %.3g\n",
         median(norm.(eachrow(naive_deltas))), maximum(norm.(eachrow(naive_deltas))))
+flush(stdout)
 
 # ── Stage 3 ★: CONSTRAINED cloud for ALL observations (threaded, checkpointed)
 println("\n── Stage 3: constrain + multi-volume repair EVERY observation ──────")
@@ -205,10 +218,12 @@ for b0 in 1:block_size:n_obs
     el = time()-t_start; frac = count(done)/n_obs
     @printf("  block %d–%d done | %d/%d (%.1f%%) | elapsed %.1f h | est. total %.1f h\n",
             b0, b1, count(done), n_obs, 100frac, el/3600, el/3600/max(frac,1e-9))
+    flush(stdout)
 end
 con_stable = [minω_all(Θcon[:, j]) >= cut_margin_THz - 1e-6 for j in 1:n_obs]
 @printf("  repaired: %d / %d | cutting plane converged %d | all-volume stable %d\n",
         n_obs, n_obs, count(okf), count(con_stable))
+flush(stdout)
 count(con_stable) == 0 && error("no constrained member is stable at all volumes — rejection sampling cannot succeed")
 writedlm("$outdir/constrained_cloud.csv", Θcon', ',')
 writedlm("$outdir/naive_cloud.csv", (naive_deltas .+ lin_params'), ',')
@@ -220,12 +235,13 @@ con_deltas = Θcon' .- θ_mean'
 hyp_c, bnd_c = hypercube(Matrix(con_deltas))
 hyp_n, bnd_n = hypercube(Matrix(naive_deltas))
 @printf("  constrained box: %d retained directions | naive box: %d\n", size(hyp_c,2), size(hyp_n,2))
+flush(stdout)
 K_ref = dot(θ_mean, b_double_prime)
 n_ck = Ref(0); n_born = Ref(0); n_aeq = Ref(0); n_volfail = zeros(Int, nvol)
 predicate = θ -> begin
     n_ck[] += 1
-    n_ck[] % 250_000 == 0 && @printf("    … %d proposals, %d past Born/a_eq, per-volume rejects %s\n",
-                                     n_ck[], n_aeq[], string(n_volfail))
+    n_ck[] % 250_000 == 0 && (@printf("    … %d proposals, %d past Born/a_eq, per-volume rejects %s\n",
+                                      n_ck[], n_aeq[], string(n_volfail)); flush(stdout))
     all(born_lower .<= born_rows*θ) || return false
     n_born[] += 1
     abs(dot(b_prime, θ .- θ_mean)/K_ref) <= 0.1 || return false
