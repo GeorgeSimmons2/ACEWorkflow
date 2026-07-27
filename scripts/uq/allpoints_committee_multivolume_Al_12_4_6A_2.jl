@@ -123,19 +123,26 @@ function constrain_member(osqp, i, extra_rows, extra_lower)
     return P \ OSQP.solve!(osqp).x
 end
 # full multi-volume repair for one observation → (θ, n_cuts, converged)
+#
+# Cut rows are accumulated in a Vector and materialised ONCE per iteration.  The
+# 30-member scripts used `extra_rows = vcat(extra_rows, row')` per cut, which rebuilds
+# the whole matrix every time: O(n²) allocation, ≈220 MB of garbage per member at the
+# ~780 cuts these solves need.  Harmless for 30 members, but with 20 threads doing it
+# concurrently for 73k members the run becomes GC-bound and parallel scaling collapses.
 function repair_one(osqp, i)
-    extra_rows = zeros(0, n_params); extra_lower = Float64[]; nc = 0
-    θ = constrain_member(osqp, i, extra_rows, extra_lower)
+    rows_acc = Vector{Vector{Float64}}(); extra_lower = Float64[]; nc = 0
+    mat() = isempty(rows_acc) ? zeros(0, n_params) : permutedims(reduce(hcat, rows_acc))
+    θ = constrain_member(osqp, i, zeros(0, n_params), extra_lower)
     conv = true
     for it in 0:max_cuts
         soft = all_soft(θ)
         isempty(soft) && break
         if it == max_cuts; conv = false; break; end
         for (v, iq, e) in soft
-            extra_rows = vcat(extra_rows, cut_row(iq, e, bps[v])'); push!(extra_lower, ω2_cut)
+            push!(rows_acc, cut_row(iq, e, bps[v])); push!(extra_lower, ω2_cut)
         end
         nc += length(soft)
-        θ = constrain_member(osqp, i, extra_rows, extra_lower)
+        θ = constrain_member(osqp, i, mat(), extra_lower)
     end
     return θ, nc, conv
 end
