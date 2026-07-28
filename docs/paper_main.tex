@@ -562,16 +562,145 @@ naive POPS                & \NUM{--} & \NUM{--} & \NUM{--} \\
 \end{itemize}
 
 \subsection{Gr\"uneisen parameters}
+\label{sec:gruneisen}
 
-\TODO{Awaiting the run; see
-\code{scripts/uq/gruneisen\_constrained\_vs\_naive\_Al\_12\_4\_6A\_2.jl}.}
+Mode Gr\"uneisen parameters were computed by Eq.~\eqref{eq:gruneisen} from
+$\partial D/\partial V$ at $a_{\mathrm{eq}}(1\mp0.01)$. Since phonopy was not
+available on this system, the branch-safe estimator is validated against a finite
+difference of sorted bands (Fig.~\ref{fig:gruneisen crosscheck}): the two agree along
+the diagonal for almost every mode, with departures confined to a small number of
+points --- exactly the band crossings at which the sorted-band derivative
+mis-assigns modes and Eq.~\eqref{eq:gruneisen} does not.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.49\linewidth]{gruneisen_mode_bandpath.pdf}%
+    \includegraphics[width=0.49\linewidth]{gruneisen_thermodynamic.pdf}
+    \caption{Left: mode Gr\"uneisen parameter along the band path, ensemble mean
+    $\pm1\sigma$ for the constrained and naive committees (dashed: the respective
+    point models). Right: macroscopic $\gamma(T) = \sum\gamma_{\bm qj}C_{\bm qj}/C_V$,
+    with the experimental Al value $\gamma\approx2.1$--$2.2$ marked.}
+    \label{fig:gruneisen}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.46\linewidth]{gruneisen_crosscheck.pdf}
+    \caption{Validation of Eq.~\eqref{eq:gruneisen} (Hellmann--Feynman, branch-safe)
+    against a finite difference of sorted bands. Agreement is exact except at band
+    crossings, where the sorted-band derivative is known to fail.}
+    \label{fig:gruneisen crosscheck}
+\end{figure}
+
+\begin{table}[h]
+\centering
+\caption{Macroscopic Gr\"uneisen parameter at 300~K across the ensembles.}
+\begin{tabular}{lrrr}
+\toprule
+ensemble & $\gamma(300\,\mathrm{K})$ & range & $\gamma<0$ \\
+\midrule
+naive POPS                & $9.24 \pm 7.78$ & $[-2.97,\ 24.86]$ & $2/30$ \\
+constrained $+$ rejection & $0.93 \pm 0.97$ & $[-1.91,\ 2.30]$  & $4/30$ \\
+\midrule
+experiment (Al)           & $2.1$--$2.2$    &                   &        \\
+\bottomrule
+\end{tabular}
+\label{tab:gruneisen}
+\end{table}
 
 \paragraph{Points to make.}
 \begin{itemize}
-  \item Mode $\gamma$ along the band path, ensemble mean $\pm1\sigma$, constrained versus naive. Expect the constrained band tight and near $\gamma\approx2$, the naive one scattered with negative $\gamma$ wherever its phonons are imaginary.
-  \item Macroscopic $\gamma(T)$ against the experimental Al value $\approx2.1$--$2.2$.
-  \item Report Eq.~\eqref{eq:gruneisen} against a finite-difference of sorted bands as an internal consistency check (phonopy was not available on this system); disagreement should localise band crossings only.
-  \item $\gamma$ is the microscopic quantity underlying thermal expansion, so this ties the anharmonicity directly to Table~\ref{tab:alpha}.
+  \item The ensemble spread collapses by a factor of eight ($\sigma = 7.78 \to 0.97$). This is the same qualitative result as the phonon and elastic observables, on a third independent quantity.
+  \item The constrained ensemble nonetheless \emph{under}estimates $\gamma$ ($0.93$ against $2.1$--$2.2$), where the naive ensemble wildly overestimates it ($9.24$).
+  \item \TODO{decide how prominently to place the over-stiffening synthesis below --- it is an honest limitation and arguably the most useful thing in the paper for a reader trying to apply the method.}
+\end{itemize}
+
+\subsection{A consistent over-stiffening, and what it implies}
+\label{sec:overstiffening}
+
+Three independent observables place the constrained ensemble on the same side of
+experiment:
+
+\begin{table}[h]
+\centering
+\caption{Constrained ensemble against experiment across three independent
+observables. All three indicate the same systematic error.}
+\begin{tabular}{llrrl}
+\toprule
+observable & measures & constrained & experiment & direction \\
+\midrule
+$\alpha$ (Eq.~\ref{eq:alpha})       & anharmonicity  & $7.28\times10^{-6}$ & $23$--$26\times10^{-6}$ & too low  \\
+$\gamma$ (Eq.~\ref{eq:gruneisen})   & anharmonicity  & $0.93$              & $2.1$--$2.2$            & too low  \\
+$\gamma_{\mathrm{us}}$              & barrier height & $360$~mJ/m$^2$      & $160$--$180$~mJ/m$^2$   & too high \\
+\bottomrule
+\end{tabular}
+\label{tab:overstiffening}
+\end{table}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item These are not three separate shortcomings but one finding measured three ways: the constrained model is systematically too stiff. Two anharmonicity measures come out low and a barrier height comes out high, which is the signature of a potential-energy surface with too much curvature.
+  \item The mechanism is visible in the constraint set. Eqs.~\eqref{eq:eos}, \eqref{eq:born} and \eqref{eq:cut row} all impose \emph{signs} --- positive curvature, positive elastic moduli, positive $\omega^2$ --- and never \emph{magnitudes}. Nothing prevents the QP from satisfying every one of them by stiffening.
+  \item This motivates constraints that pin a magnitude. Sec.~\ref{sec:exact cij} does exactly that for the elastic constants.
+  \item \TODO{state the scope honestly: the over-stiffening is measured on the 91-parameter \code{Al\_12\_4\_6A\_2\_} model. Sec.~\ref{sec:exact cij} finds $\gamma_{\mathrm{us}}\approx175$--$182$~mJ/m$^2$ for the 5476-parameter \code{Al\_20\_4\_6A\_4}, i.e.\ within experiment, which suggests much of the effect is model capacity rather than the constraint scheme. Testing that properly means running the phonon-constrained pipeline on the larger model.}
+\end{itemize}
+
+\subsection{Pinning the elastic constants exactly}
+\label{sec:exact cij}
+
+The constraints above impose elastic \emph{stability} without constraining elastic
+\emph{values}: across the constrained POPS ensemble, $C_{11}$ spans $48$--$306$~GPa
+while every member satisfies Eq.~\eqref{eq:born}. Since the elastic operator is
+linear in $c$, pinning the constants exactly requires only that the Born rows be
+imposed as equalities, $l = u = C_{ij}^{\mathrm{target}}$.
+
+We test this on \code{Al\_20\_4\_6A\_4} ($5476$ basis functions), comparing the
+regularised least-squares fit against one in which $C_{11}$, $C_{12}$ and $C_{44}$
+are pinned to literature values while $b'(a_{\mathrm{eq}})\cdot c = 0$ is retained,
+so that both models sit at their own relaxed equilibrium.
+
+\begin{table}[h]
+\centering
+\caption{\code{Al\_20\_4\_6A\_4}: regularised least squares against exactly-pinned
+elastic constants. The equality constraints are attained to three decimal places,
+and $a_{\mathrm{eq}}$ is identical in both models, so the comparison is controlled.
+$\gamma_{\mathrm{us}}$, $G$ and $\nu$ are \emph{not} constrained.}
+\begin{tabular}{lrrl}
+\toprule
+ & nominal (RLS) & pinned $C_{ij}$ & reference \\
+\midrule
+$a_{\mathrm{eq}}$ (\AA)            & $4.049236$ & $4.049236$ & $4.05$ \\
+$C_{11}$ (GPa)                     & $116.67$   & $116.300$  & target $116.3$ \\
+$C_{12}$ (GPa)                     & $52.06$    & $64.800$   & target $64.8$ \\
+$C_{44}$ (GPa)                     & $36.70$    & $30.900$   & target $30.9$ \\
+\midrule
+$G$ (GPa)                          & $34.94$    & $28.84$    & $\approx26$ \\
+$\nu$                              & $0.295$    & $0.3425$   & $\approx0.35$ \\
+$\gamma_{\mathrm{us}}$ (mJ/m$^2$)  & $181.8$    & $174.3$    & $160$--$180$ \\
+$\tau_P$ (GPa)                     & $5.85\times10^{-5}$ & $1.56\times10^{-4}$ & \\
+\bottomrule
+\end{tabular}
+\label{tab:exact cij}
+\end{table}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.49\linewidth]{gsf_curves_exact_cij.pdf}%
+    \includegraphics[width=0.49\linewidth]{gsf_curves_committee.pdf}
+    \caption{Left: rigid $\{111\}\langle112\rangle$ $\gamma$-surface for
+    \code{Al\_20\_4\_6A\_4}, regularised least squares against exactly-pinned
+    $C_{ij}$. Right: the same curve across the \code{Al\_12\_4\_6A\_2\_} POPS
+    ensembles, mean $\pm1\sigma$.}
+    \label{fig:gsf}
+\end{figure}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item The unconstrained fit reproduces $C_{11}$ to $0.3\%$ but misses $C_{12}$ by $20\%$ (low) and $C_{44}$ by $19\%$ (high) --- it gets the bulk-like combination right and the shear terms wrong. This is a concrete instance of the poorly-converged-DFT-stress argument from the introduction.
+  \item Pinning moves $G$ and $\nu$ toward experiment, as it must. More interestingly it also improves $\gamma_{\mathrm{us}}$ ($181.8 \to 174.3$~mJ/m$^2$, further into the experimental band) --- a quantity the constraint never touched. Elastic and stacking-fault physics are therefore coupled in the parameter space, and pinning one improves the other.
+  \item $\tau_P$ shifts by a factor of $2.7$. Since $\tau_P = f(\gamma_{\mathrm{us}}, C_{ij})$ and the $C_{ij}$ are now exact, the residual uncertainty in $\tau_P$ is attributable to $\gamma_{\mathrm{us}}$ alone.
+  \item \TODO{the absolute $\tau_P$ values are small; the PN closed form used here is internally consistent but not literature-grade (see the module docstring). Present the \emph{ratio}, not the absolute stress, or upgrade the PN treatment.}
+  \item \TODO{natural next step for the ensemble: pin $C_{ij}$ across a POPS committee and show the $\tau_P$ spread collapse. $\gamma_{\mathrm{us}}$ is itself a linear row (\code{gsf\_basis\_delta.csv}), so it could be pinned too.}
 \end{itemize}
 
 \subsection{Uncertainty quantification: parity, calibration and coverage}
@@ -627,6 +756,37 @@ C: full per-observation repair & $0.994$ & $25.9$ & $0.379$ & $68.4$ & $29.9$ & 
   \item Construction A matches B at \emph{narrower} intervals: coverage per unit width is $38.3$ against $38.2$~\%/eV on energies, and on forces A is better ($97.1\%$ at width $1.616$ against $99.2\%$ at $1.874$, i.e.\ $14\%$ narrower for $2$ points less coverage). The constrained ensemble therefore gives naive-quality UQ \emph{and} phonon-stable members --- the central claim of the paper.
   \item A and C share an RMSE of $0.994$~eV because RMSE is a property of the \emph{point model} and both are centred on the constrained mean; B's marginally lower $0.989$ is the regularised least-squares model fitting slightly better. Worth stating explicitly --- a referee will otherwise read the equality as a mistake.
   \item C's high coverage-per-width ($68.4$) is an artefact of the rank deficiency, not a virtue: its envelope is so narrow that the ratio flatters it while absolute coverage collapses to $26\%$. This is the case where the per-width normalisation must \emph{not} be read on its own.
+\end{itemize}
+
+\subsection{Elastic stability across the ensembles}
+\label{sec:elastic stability}
+
+Evaluating the elastic constants member by member exposes a failure of naive POPS
+that is categorical rather than quantitative.
+
+\begin{table}[h]
+\centering
+\caption{Elastic behaviour across the \code{Al\_12\_4\_6A\_2\_} ensembles. A member
+with $G\le0$ or $\nu\notin(-1,\tfrac12)$ is elastically unstable, and the
+Peierls--Nabarro prefactor $K = G/(1-\nu)$ is then undefined --- not merely
+inaccurate.}
+\begin{tabular}{lrrr}
+\toprule
+ensemble & $C_{44}$ range (GPa) & $G$ range (GPa) & elastically unstable \\
+\midrule
+naive POPS                & $-54.5$ -- $66.2$ & $-19.7$ -- $70.1$ & $12/30$ \\
+constrained $+$ rejection & $\phantom{-}25.6$ -- $128.4$ & $\phantom{-}23.9$ -- $117.8$ & $0/30$ \\
+\bottomrule
+\end{tabular}
+\label{tab:elastic stability}
+\end{table}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item Twelve of thirty naive members have a \emph{negative shear modulus}. For those members $\tau_P$ is undefined, not large --- the computation returns $-\infty$. The constrained ensemble has none, and every Poisson ratio lies in $(0.12,0.30)$.
+  \item This is a stronger statement than the phonon result, where at least a number came out for every member, and it lands on a dislocation-relevant quantity.
+  \item The rigid $\gamma$-surface is itself a linear functional of $c$ (Sec.~\ref{sec:cheap}), so $\gamma_{\mathrm{us}}$ for an entire ensemble costs one basis evaluation per displacement. Verified against direct energy evaluation to $1.7\times10^{-14}$~eV/\AA$^2$.
+  \item \TODO{note that the constrained ensemble is elastically \emph{stable} but not elastically \emph{accurate} --- $C_{11}$ still spans $48$--$306$~GPa. That is what Sec.~\ref{sec:exact cij} addresses.}
 \end{itemize}
 
 \subsection{Computational cost}
