@@ -192,14 +192,17 @@ def main(root):
 
     dest = os.path.join(root, "fcc_order_verdict.csv")
     with open(dest, "w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(["# supersedes still_fcc in thermal_expansion_summary.csv, which used a "
-                    "fixed 3.3 A neighbour cutoff that does not scale with the lattice constant"])
-        w.writerow([f"# q6bar cutoff 0.8536*a, solid if q6bar>{Q6_SOLID} for >={100*FRAC_MIN:.0f}% of atoms, "
-                    f"averaged over last {N_FRAMES} frames"])
-        w.writerow(["# a_Ang is the production-window average from "
-                    "thermal_expansion_summary.csv; alpha is a weighted fit over "
-                    "crystalline temperatures only"])
+        # comments are written raw: csv.writer would quote them (they contain commas),
+        # so they would not start with '#' and a '#'-filtering reader would take the
+        # first one as the header row. lineterminator='\n' keeps '\r' out of fields
+        # for readers that split on lines before parsing.
+        fh.write("# supersedes still_fcc in thermal_expansion_summary.csv, which used a "
+                 "fixed 3.3 A neighbour cutoff that does not scale with the lattice constant\n")
+        fh.write(f"# q6bar cutoff 0.8536*a; solid if q6bar>{Q6_SOLID} for >={100*FRAC_MIN:.0f}% of atoms; "
+                 f"averaged over last {N_FRAMES} frames\n")
+        fh.write("# a_Ang is the production-window average from thermal_expansion_summary.csv; "
+                 "alpha is a weighted fit over crystalline temperatures only\n")
+        w = csv.writer(fh, lineterminator="\n")
         w.writerow(["run", "T_K", "a_Ang", "q6bar_mean", "q6bar_std",
                     "frac_ordered", "crystalline", "alpha_1e6_per_K", "alpha_se_1e6_per_K"])
         for r in out:
