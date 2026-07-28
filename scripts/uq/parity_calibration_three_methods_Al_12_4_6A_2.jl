@@ -65,7 +65,7 @@ stride   = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 10
 test_xyz = "data/Al/manual_df_test_Al.xyz"
 isfile(test_xyz) || error("test set not found at $test_xyz (run from the repo root)")
 
-HDR = "method,n_members,n_configs,E_rmse_eV,E_coverage_pct,E_bias_pctMAE,E_mean_width_eV,F_rmse_eVperA,F_coverage_pct,F_bias_pctMAE,F_mean_width_eVperA"
+HDR = "method,n_members,n_configs,stride,E_rmse_eV,E_coverage_pct,E_bias_pctMAE,E_mean_width_eV,F_rmse_eVperA,F_coverage_pct,F_bias_pctMAE,F_mean_width_eVperA"
 if domerge
     d = "models/Al_12_4_6A_2_/results/aeq_cheap_vs_expensive/parity_calibration"
     isdir(d) || error("no $d — run the per-method tasks first")
@@ -144,8 +144,8 @@ for (tag, csv, centre, col) in methods
     wE = mean(pr.hiE .- pr.loE)
     wF = isempty(pr.tF) ? NaN : mean(pr.hiF .- pr.loF)
     @printf("   mean envelope width: energy %.4g eV, force %.4g eV/Å\n\n", wE, wF); flush(stdout)
-    row = @sprintf("%s,%d,%d,%.6g,%.4f,%.4f,%.6g,%.6g,%.4f,%.4f,%.6g",
-                   tag, length(committee), pr.n, eR, cE.coverage, cE.bias, wE,
+    row = @sprintf("%s,%d,%d,%d,%.6g,%.4f,%.4f,%.6g,%.6g,%.4f,%.4f,%.6g",
+                   tag, length(committee), pr.n, stride, eR, cE.coverage, cE.bias, wE,
                    fR, cF.coverage, cF.bias, wF)
     push!(rows, row)
     write("$outdir/$(tag)_row.csv", row * "\n")     # so a parallel run can be merged
