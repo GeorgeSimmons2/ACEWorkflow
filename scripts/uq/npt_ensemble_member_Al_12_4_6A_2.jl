@@ -3,6 +3,19 @@
 # ONE trajectory of a 6-member NPT ENSEMBLE.  Run as a SLURM array (0..5) so all six
 # integrate in parallel; each task writes its own directory and metadata.
 #
+# TWO ENSEMBLES, selected by ARGS[2] / ENV["ENSEMBLE"] (default "constrained"):
+#
+#   constrained : index 0 = the phonon+a_eq constrained MEAN, indices 1-5 = members of
+#                 the cheap a_eq-QP + phonon-REJECTION committee   → npt_ensemble/
+#   naive       : index 0 = the regularised least-squares (RLS) model itself,
+#                 indices 1-5 = plain naive POPS members, NO constraints and NO
+#                 rejection                                        → npt_ensemble_naive/
+#
+# The two use the SAME subsample_seed (so the same committee rows) and the SAME MD
+# seeds, so members are paired: naive member_k and constrained member_k differ only by
+# the constraint and the rejection step. That is the comparison — whether constrained +
+# rejection gives physical bounds on the thermal expansion where naive POPS does not.
+#
 #   index 0   : the CONSTRAINED MEAN — a_eq pinned (b′·θ=0, b″·θ>0) AND phonon-positive
 #               at all six volumes a_eq·{1.00,…,1.10}.  Source:
 #               results/bandpath_undotted_multivolume/theta_mean.csv
@@ -21,8 +34,9 @@
 # settings.  See metadata.csv / theta_used.csv in each output directory, and the
 # manifest written by index 0.
 #
-# Run:  sbatch scripts/uq/run_npt_ensemble.slurm            (array 0-5, parallel)
-#       julia --project -t 8 scripts/uq/npt_ensemble_member_Al_12_4_6A_2.jl 3   (single)
+# Run:  sbatch scripts/uq/run_npt_ensemble.slurm             (constrained, array 0-5)
+#       sbatch scripts/uq/run_npt_ensemble_naive.slurm       (naive,       array 0-5)
+#       julia --project -t 8 scripts/uq/npt_ensemble_member_Al_12_4_6A_2.jl 3 naive
 
 include(joinpath(@__DIR__, "..", "bandpath_phonon_uq", "lib.jl"))
 using Molly, Random, SHA
@@ -59,12 +73,31 @@ fcc_coord_tol  = 1.0
 nn_cutoff      = 3.3
 cluster_cutoff = 2.2
 
+ensemble = if length(ARGS) >= 2
+    lowercase(ARGS[2])
+elseif haskey(ENV, "ENSEMBLE")
+    lowercase(ENV["ENSEMBLE"])
+else
+    "constrained"
+end
+ensemble in ("constrained","naive") || error("ensemble must be \"constrained\" or \"naive\", got $ensemble")
+
 result = load_model(element, 12, 4, 6, 2; dataset_name=dataset)
 model  = result.model; lin_params = result.lin_params; n_params = length(lin_params)
 RES    = "$(result.dir)/results"
-MEAN_CSV = "$RES/bandpath_undotted_multivolume/theta_mean.csv"
-COMM_CSV = "$RES/aeq_cheap_vs_expensive/committee_A_cheap_phononreject.csv"
-ens_root = "$RES/npt_ensemble"; mkpath(ens_root)
+if ensemble == "constrained"
+    MEAN_CSV = "$RES/bandpath_undotted_multivolume/theta_mean.csv"   # phonon + a_eq constrained mean
+    COMM_CSV = "$RES/aeq_cheap_vs_expensive/committee_A_cheap_phononreject.csv"
+    MEAN_ROLE = "constrained_mean"
+    ens_root = "$RES/npt_ensemble"
+else
+    MEAN_CSV = ""                                                    # RLS model = lin_params
+    COMM_CSV = "$RES/aeq_cheap_vs_expensive/committee_B_naive.csv"    # naive POPS, no constraints
+    MEAN_ROLE = "rls_model"
+    ens_root = "$RES/npt_ensemble_naive"
+end
+mkpath(ens_root)
+@printf("ensemble = %s   (mean role %s)\n", ensemble, MEAN_ROLE); flush(stdout)
 
 # ── deterministic subsample of 5 committee members ───────────────────────────
 comm = readdlm(COMM_CSV, ',')
@@ -72,9 +105,10 @@ size(comm, 2) == n_params || error("committee has $(size(comm,2)) cols, model ha
 picked = sort(randperm(MersenneTwister(subsample_seed), size(comm,1))[1:n_members])
 
 if idx == 0
-    role   = "constrained_mean"
-    θ      = vec(readdlm(MEAN_CSV, ','))
-    src    = MEAN_CSV; srcrow = 0
+    role   = MEAN_ROLE
+    θ      = isempty(MEAN_CSV) ? copy(lin_params) : vec(readdlm(MEAN_CSV, ','))
+    src    = isempty(MEAN_CSV) ? "model lin_params (regularised least squares)" : MEAN_CSV
+    srcrow = 0
 else
     row    = picked[idx]
     role   = "member_$(row)"
@@ -230,6 +264,7 @@ s_cell     = "$(supercell[1])x$(supercell[2])x$(supercell[3])"
 open("$outdir/metadata.csv", "w") do io
     println(io, "key,value")
     println(io, "role,$role")
+    println(io, "ensemble,$ensemble")
     println(io, "ensemble_index,$idx")
     println(io, "source_file,$src")
     println(io, "source_row,$srcrow  # 0 = not a committee row (the constrained mean)")
@@ -269,9 +304,9 @@ end
 # index 0 also writes the ensemble manifest
 if idx == 0
     open("$ens_root/MANIFEST.csv", "w") do io
-        println(io, "# NPT ensemble — one trajectory set per parameter vector, identical MD seeds")
+        println(io, "# NPT ensemble ($ensemble) — one trajectory set per parameter vector, identical MD seeds")
         println(io, "index,role,source_file,source_row")
-        println(io, "0,constrained_mean,$MEAN_CSV,0")
+        println(io, "0,$MEAN_ROLE,$(isempty(MEAN_CSV) ? "lin_params_RLS" : MEAN_CSV),0")
         for (i,r) in enumerate(picked); println(io, "$i,member_$r,$COMM_CSV,$r"); end
         println(io, "# subsample_seed=$subsample_seed  md_seed_base=$md_seed")
         println(io, "# temperatures=$s_temps  supercell=$(supercell[1])^3")

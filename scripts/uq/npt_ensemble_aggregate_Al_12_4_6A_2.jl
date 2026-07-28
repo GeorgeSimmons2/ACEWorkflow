@@ -14,12 +14,16 @@
 #   ensemble_summary.csv                per-member α, FCC survival, worst min ω
 #   ensemble_alpha.csv                  α mean, std, min, max over members
 #
-# Run:  julia --project scripts/uq/npt_ensemble_aggregate_Al_12_4_6A_2.jl
+# Run:  julia --project scripts/uq/npt_ensemble_aggregate_Al_12_4_6A_2.jl [ensemble_dir]
+#         ensemble_dir defaults to npt_ensemble (constrained); pass npt_ensemble_naive
+#         for the unconstrained control.
 
 include(joinpath(@__DIR__, "..", "bandpath_phonon_uq", "lib.jl"))
 
 result   = load_model(:Al, 12, 4, 6, 2; dataset_name="")
-ens_root = "$(result.dir)/results/npt_ensemble"
+# argv[1] = which ensemble directory under results/ (default the constrained one)
+ens_name = isempty(ARGS) ? "npt_ensemble" : ARGS[1]
+ens_root = "$(result.dir)/results/$ens_name"
 isdir(ens_root) || error("no ensemble at $ens_root — run the array job first")
 roles = sort(filter(d -> isdir(joinpath(ens_root, d)) &&
                          isfile(joinpath(ens_root, d, "thermal_expansion_summary.csv")),
@@ -46,7 +50,7 @@ end
 Ts = sort(unique(vcat([m.T[m.T .> 0] for m in values(mem)]...)))
 BLU = RGBf(0.0,0.447,0.698); GRN = RGBf(0.0,0.62,0.451); CRIM = RGBf(0.80,0.15,0.15)
 GREY = RGBAf(0.45,0.45,0.45,0.55)
-ismean(r) = r == "constrained_mean"
+ismean(r) = r in ("constrained_mean", "rls_model")   # index-0 reference of either ensemble
 
 # ── (1) thermal expansion with committee band ────────────────────────────────
 let fig = Figure(size=(520,380), figure_padding=(6,10,4,6))
