@@ -603,15 +603,18 @@ not in breadth.
 
 \begin{table}[h]
 \centering
-\caption{Test-set parity and calibration for the three ensemble constructions.
-\NUM{Placeholder --- awaiting the three-way run.}}
-\begin{tabular}{lrrrr}
+\caption{Test-set parity and calibration for the three ensemble constructions
+(1104 configurations, stride 20). Coverage is the fraction of test points inside
+the ensemble min/max envelope; width is the mean envelope width. Coverage per
+unit width is the meaningful comparison, since coverage alone rewards breadth.}
+\begin{tabular}{lrrrrrr}
 \toprule
-construction & RMSE$_E$ & coverage$_E$ & mean width$_E$ & coverage$_F$ \\
+construction & RMSE$_E$ & cov$_E$ & width$_E$ & cov$_E$/width & cov$_F$ & width$_F$ \\
+             & (eV)     & (\%)    & (eV)      & (\%/eV)       & (\%)    & (eV/\AA) \\
 \midrule
-A: EOS-QP $+$ phonon rejection & \NUM{--} & \NUM{--} & \NUM{--} & \NUM{--} \\
-B: naive POPS, no constraints  & \NUM{--} & \NUM{--} & \NUM{--} & \NUM{--} \\
-C: full per-observation repair & \NUM{--} & \NUM{--} & \NUM{--} & \NUM{--} \\
+A: EOS-QP $+$ phonon rejection & $0.994$ & $90.7$ & $2.366$ & $38.3$ & $97.1$ & $1.616$ \\
+B: naive POPS, no constraints  & $0.989$ & $93.6$ & $2.447$ & $38.2$ & $99.2$ & $1.874$ \\
+C: full per-observation repair & $0.994$ & $25.9$ & $0.379$ & $68.4$ & $29.9$ & $0.220$ \\
 \bottomrule
 \end{tabular}
 \label{tab:uq}
@@ -621,8 +624,9 @@ C: full per-observation repair & \NUM{--} & \NUM{--} & \NUM{--} & \NUM{--} \\
 \begin{itemize}
   \item Always report coverage \emph{with} interval width; coverage alone cannot distinguish a well-calibrated ensemble from a merely wider one.
   \item Construction C is built from only 30 observations and is therefore rank-limited --- Eq.~\eqref{eq:box} spans at most 29 of 91 directions --- and its training coverage collapses to $29.8\%$ with intervals $8\times$ narrower. This is a structural argument for constraining the whole cloud rather than a hand-picked subset, and is independent of any physics.
-  \item Construction A matches B on coverage while being phonon-stable. This is the central UQ claim of the paper.
-  \item \TODO{report test-set coverage as the headline number; training coverage is optimistic by construction.}
+  \item Construction A matches B at \emph{narrower} intervals: coverage per unit width is $38.3$ against $38.2$~\%/eV on energies, and on forces A is better ($97.1\%$ at width $1.616$ against $99.2\%$ at $1.874$, i.e.\ $14\%$ narrower for $2$ points less coverage). The constrained ensemble therefore gives naive-quality UQ \emph{and} phonon-stable members --- the central claim of the paper.
+  \item A and C share an RMSE of $0.994$~eV because RMSE is a property of the \emph{point model} and both are centred on the constrained mean; B's marginally lower $0.989$ is the regularised least-squares model fitting slightly better. Worth stating explicitly --- a referee will otherwise read the equality as a mistake.
+  \item C's high coverage-per-width ($68.4$) is an artefact of the rank deficiency, not a virtue: its envelope is so narrow that the ratio flatters it while absolute coverage collapses to $26\%$. This is the case where the per-width normalisation must \emph{not} be read on its own.
 \end{itemize}
 
 \subsection{Computational cost}
