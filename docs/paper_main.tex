@@ -1,0 +1,619 @@
+\documentclass{article}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue]{hyperref}
+
+% ---------------------------------------------------------------------------
+% Drafting aids — delete before submission.
+%   \TODO{...}  something for George to write or decide
+%   \NUM{...}   a number that is NOT yet final (job still running)
+%   \code{...}  pointer to the implementation, for checking the maths
+% ---------------------------------------------------------------------------
+\newcommand{\TODO}[1]{{\color{blue}\textbf{[TODO: #1]}}}
+\newcommand{\NUM}[1]{{\color{red}\textbf{#1}}}
+\newcommand{\code}[1]{\texttt{\small #1}}
+
+\title{Physics Informed Priors for MLIPs with UQ}
+\author{George Simmons}
+\date{June 2026}
+
+\begin{document}
+\maketitle
+\vspace{2pc}
+
+\section{Meta / abstract points}
+\begin{enumerate}
+    \item To propagate uncertainties up scales we need to capture MLIP errors at the level of MLIP parameters
+    \item However, the resultant model ensemble can be highly unphysical.
+    \item Here, we implement physics informed priors for linear MLIPs through inequality constraints
+    \item We provide an open source implementation within the POPS UQ scheme
+    \item For simple models, the constraints notably improve phonon stability
+    \item The final scheme provides robust max/min bounds while retaining physically meaningful model parameters.
+\end{enumerate}
+
+\section{Main points}
+\begin{enumerate}
+    \item To communicate that addressing holes in the potential energy surface is traditionally addressed by evaluating more DFT (via hyper-active learning, fine-tuning, etc.) and can be done less expensively
+    \item DFT stresses are not well converged so elastic properties are often incorrectly predicted by DFT
+    \item Non-repulsive core interactions for potentials are often observed, using our priors allows us to access high pressure conditions
+    \item Priors can be formulated based on experimental data
+    \item Inclusion of UQ via POPS and analysis of how this affects coverage of training data/test data
+\end{enumerate}
+
+% ===========================================================================
+\section{Method}
+% ===========================================================================
+
+\subsection{Linear MLIPs and the constrained fit}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item Linearity in the parameters is the structural property the whole scheme rests on --- it is what makes every physical observable below an \emph{exact} linear functional of $c$, and hence expressible as a QP row.
+  \item Contrast with committee schemes for non-linear MLIPs, where physical constraints can only be imposed by penalty or by retraining.
+\end{itemize}
+
+For an atomic configuration $R$ the ACE energy is linear in the parameter vector
+$c \in \mathbb{R}^{d}$,
+\begin{equation}
+  E(R;c) \;=\; \sum_{k=1}^{d} c_k B_k(R) \;=\; B(R)\cdot c ,
+  \label{eq:linear energy}
+\end{equation}
+with $B_k$ the ACE basis functions. Because differentiation is linear, every
+derivative of $E$ inherits the same affine dependence on $c$; in particular the
+force-constant matrix
+\begin{equation}
+  \Phi_{a\alpha,b\beta}(c) \;=\; \frac{\partial^{2}E}{\partial r_{a\alpha}\partial r_{b\beta}}
+  \;=\; \sum_{k=1}^{d} c_k\, \Phi^{(k)}_{a\alpha,b\beta},
+  \qquad
+  \Phi^{(k)} = \frac{\partial^{2}B_k}{\partial r\,\partial r},
+  \label{eq:linear hessian}
+\end{equation}
+splits into $d$ geometry-only tensors. We refer to $\{\Phi^{(k)}\}$ as the
+\emph{undotted} Hessian: it depends on the geometry but not on $c$, so it is built
+once per geometry and reused for every ensemble member. This is what reduces a
+per-member phonon calculation from a full Hessian build to a matrix--vector
+product and a small eigendecomposition, cheap enough to serve as a rejection
+predicate.
+\code{scripts/bandpath\_phonon\_uq/lib.jl}
+(\code{undotted\_hessian}, \code{undotted\_Hbasis}).
+
+The unconstrained fit is ridge regression,
+\begin{equation}
+  \text{minimize}\quad \left\| Xc-y \right\|_2^2 + \left\| \Gamma c \right\|_2^2 ,
+  \label{eq:ridge}
+\end{equation}
+with $X$ the design matrix and $y$ the observations (energies, forces, virials).
+Linear constraints are imposed by writing this as a quadratic program,
+\begin{equation}
+\begin{split}
+    & \text{minimize} \quad \tfrac{1}{2}c^{T} P c + q^{T}c \\
+    & \text{subject to} \quad l \leq Ac \leq u,
+\end{split}
+\label{eq:qp}
+\end{equation}
+where $P := X^{T}X + \Gamma^{T}\Gamma \in \mathbb{S}_+^d$ and $q := -X^{T}y$.
+Each row of $A$ with its bounds $(l,u)$ is one physical requirement; an equality
+is the case $l=u$. We solve Eq.~\eqref{eq:qp} with OSQP.
+
+\paragraph{Preconditioning, and what the prior actually is.}
+The fit is carried out in a preconditioned variable. With $W$ the diagonal
+observation weights, $S$ the diagonal preconditioner and $\lambda = 1/M$ ($M$ the
+number of observations),
+\begin{equation}
+  \tilde X = W X S^{-1}, \qquad \tilde y = W y, \qquad \tilde c = S c ,
+\end{equation}
+and the objective actually solved is
+$\tfrac12\|\tilde X\tilde c - \tilde y\|_2^2 + \tfrac{\lambda}{2}\|S\tilde c\|_2^2$.
+Substituting $\tilde c = Sc$ shows the effective prior in Eq.~\eqref{eq:ridge} is
+\begin{equation}
+  \Gamma \;=\; \sqrt{\lambda}\, S^{2},
+  \label{eq:gamma eff}
+\end{equation}
+i.e.\ the \emph{square} of the preconditioner. A constraint row $g$ acting on $c$
+is transported as $gS^{-1}$ acting on $\tilde c$, and the solution recovered as
+$c = S^{-1}\tilde c$.
+\TODO{decide whether Eq.~\eqref{eq:gamma eff} belongs in the main text or a
+footnote. It is a property of the implementation, but a referee reproducing the
+prior will otherwise infer $\Gamma = S$ and get a different regulariser.}
+
+\subsection{POPS ensembles}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item POPS is \emph{post hoc}: one fit, then closed-form perturbations. No retraining per member, which is what makes constraining every member affordable.
+  \item Each member answers a counterfactual --- ``what would the fit have been had this observation been reproduced exactly?''
+  \item The min/max envelope over members is a range statistic, not a confidence interval. Say so explicitly to pre-empt the obvious referee question.
+\end{itemize}
+
+Write $C = \tilde X^{T}\tilde X + \lambda S^{2}$, $G = C^{-1}\tilde X^{T}$,
+leverage $h_i = (\tilde X G)_{ii}$ and residual
+$r = \tilde y - \tilde X\tilde c_{\mathrm{LSQ}}$. The POPS pointwise correction
+and corresponding ensemble member are
+\begin{equation}
+  \delta c^{(i)} \;=\; S^{-1} G_{:,i}\,\frac{r_i}{h_i},
+  \qquad
+  c^{(i)} \;=\; c_{\mathrm{LSQ}} + \delta c^{(i)} .
+  \label{eq:pops}
+\end{equation}
+The correction is exactly the perturbation that makes the model interpolate
+observation $i$,
+\begin{equation}
+  \tilde X_{i,:}\bigl(S\,\delta c^{(i)}\bigr)
+  = \tilde X_{i,:} G_{:,i}\frac{r_i}{h_i}
+  = h_i\,\frac{r_i}{h_i} = r_i ,
+  \label{eq:interp identity}
+\end{equation}
+so the member's prediction at $i$ moves by precisely the residual there.
+\code{src/POPS/POPSRegression.jl} (\code{corrections}); the per-observation
+construction used here agrees with the module to $8\times10^{-8}$.
+
+Members are drawn by an axis-aligned hypercube proposal in the eigenbasis of the
+correction cloud. Collecting corrections as rows of $\Delta$, diagonalising
+$\Delta^{T}\Delta = V\Lambda V^{T}$ and retaining directions with
+$\Lambda_{jj} > 10^{-8}\max_l\Lambda_{ll}$, the box is the bounding box of the
+projections $\Pi = \Delta V$,
+\begin{equation}
+  \ell_j = \min_i \Pi_{ij}, \qquad u_j = \max_i \Pi_{ij},
+  \label{eq:box}
+\end{equation}
+with proposals $c = c_0 + V(\ell + (u-\ell)\odot\bm u)$,
+$\bm u \sim \mathcal{U}[0,1]^{p}$. The box is \emph{unclipped}: the feasible-set
+geometry is imposed exactly by rejection rather than approximated by shrinking
+the proposal. \code{src/POPS/POPSRegression.jl}
+(\code{hypercube}, \code{rejection\_sample\_hypercube}).
+
+\paragraph{A rank remark.}
+A cloud of $N$ members spans at most $N-1$ directions, so Eq.~\eqref{eq:box}
+confines the ensemble to a subspace of dimension $\le N-1$ of the
+$d$-dimensional parameter space. For $N \ll d$ the predictive envelope is
+systematically too narrow --- quantified in Sec.~\ref{sec:uq results}.
+
+\subsection{Physical constraints}
+\label{sec:constraints}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item Each constraint is a statement about the potential energy surface, not about the data. That is the sense in which they are priors.
+  \item All are exact linear rows in $c$: no finite differences, no retraining, no penalty parameters to tune.
+  \item They are cheap relative to acquiring more DFT, which is the alternative route to the same physics.
+\end{itemize}
+
+\paragraph{Equation of state.}
+Let $b(a) = B(\text{reference cell at lattice constant } a)$, so that
+$E(a;c) = b(a)\cdot c$ is again linear. With
+$b' = \mathrm{d}b/\mathrm{d}a|_{a_{\mathrm{eq}}}$ and
+$b'' = \mathrm{d}^{2}b/\mathrm{d}a^{2}|_{a_{\mathrm{eq}}}$,
+\begin{equation}
+  b'\cdot c = 0 \quad(\text{equality}), \qquad b''\cdot c \ge \varepsilon ,
+  \label{eq:eos}
+\end{equation}
+states that $a_{\mathrm{eq}}$ is a stationary point of the energy--volume curve
+and that it is a minimum. Together these pin every member's equilibrium lattice
+constant to a common reference, which is what makes a \emph{fixed} reference
+geometry legitimate for the phonon rows below.
+
+\paragraph{Born elastic stability.}
+The Voigt elastic operator is linear in $c$,
+$C_{ij}(c) = \sum_k c_k H^{\mathrm{el}}_{ij,k}$ with
+$H^{\mathrm{el}}_{ij,k} = \partial^{2}B_k/\partial\varepsilon_i\partial\varepsilon_j$,
+so the cubic Born criteria enter as three rows,
+\begin{equation}
+  C_{44} > 0, \qquad C_{11}-C_{12} > 0, \qquad C_{11}+2C_{12} > 0 .
+  \label{eq:born}
+\end{equation}
+\code{src/Elasticity/get\_hessian.jl} (\code{elastic\_hessian\_basis}).
+
+\paragraph{Phonon stability.}
+From Eq.~\eqref{eq:linear hessian} the Bloch transform to the primitive-cell
+dynamical matrix is a fixed linear map, so
+\begin{equation}
+  D(\bm q;c) \;=\; \sum_{k=1}^{d} c_k\, D^{(k)}(\bm q),
+  \label{eq:D linear}
+\end{equation}
+with
+\begin{equation}
+  D^{(k)}_{i\alpha,j\beta}(\bm q)
+  = \frac{1}{\sqrt{m_i m_j}}
+    \sum_{l\,:\,\mathrm{s2p}(l)=j}
+    \Phi^{(k)}_{\mathrm{p2s}(i)\alpha,\;l\beta}\,
+    e^{\mathrm{i}\bm q\cdot \bm R_l},
+  \label{eq:bloch}
+\end{equation}
+where $\bm R_l$ is taken under the minimum-image convention in supercell
+fractional coordinates. Frequencies follow from the eigenvalues $\mu_\nu$ of $D$,
+\begin{equation}
+  \omega_\nu(\bm q;c) = \mathrm{sgn}(\mu_\nu)\sqrt{|\mu_\nu|}\;f,
+  \qquad f = \frac{1}{2\pi\times10^{12}}\sqrt{\frac{e}{\text{\AA}^{2}u}} \approx 15.633~\mathrm{THz},
+  \label{eq:freq}
+\end{equation}
+the signed square root displaying imaginary (unstable) modes as negative
+frequencies. \code{src/Phonons/phonon\_bands.jl}
+(\code{precompute\_force\_constants}, \code{dynamical\_matrix\_from\_fc});
+band-path assembly in \code{scripts/bandpath\_phonon\_uq/lib.jl}
+(\code{bandpath\_Dk}).
+
+The scalar stability metric used throughout is the minimum non-acoustic
+frequency over the sampled high-symmetry path,
+\begin{equation}
+  m(c) \;=\; \min_{\bm q:\ \|\bm q\| \ge q_\Gamma}\ \min_\nu\ \omega_\nu(\bm q;c),
+  \label{eq:minfreq}
+\end{equation}
+excluding a neighbourhood of $\Gamma$ where the acoustic branches vanish by
+construction.
+
+\paragraph{Cutting planes.}
+Requiring $\min_\nu\mu_\nu \ge \omega_{\mathrm{cut}}^{2}$ is not linear in $c$,
+but it is the infimum of linear constraints. For any fixed unit vector $e$ the
+Rayleigh quotient is an \emph{exact} linear functional of $c$,
+\begin{equation}
+  e^{\dagger} D(\bm q;c)\, e
+  \;=\; \sum_k c_k \underbrace{\mathrm{Re}\bigl[e^{\dagger} D^{(k)}(\bm q)\,e\bigr]}_{g_k(\bm q,e)}
+  \;=\; g(\bm q,e)\cdot c \;\ge\; \omega_{\mathrm{cut}}^{2},
+  \label{eq:cut row}
+\end{equation}
+requiring no finite differences and no displacement amplitude. Since
+$e^{\dagger}De \ge \mu_{\min}(D)$ for every unit $e$, one such row is necessary
+but not sufficient: the eigenvector rotates as $c$ moves. The constraint set is
+therefore accumulated by a cutting-plane loop --- re-diagonalise, append rows for
+whatever remains soft, re-solve --- until no soft mode remains.
+\code{scripts/bandpath\_phonon\_uq/lib.jl}
+(\code{cut\_row}, \code{soft\_modes}).
+
+\subsection{Constraining across volumes}
+\label{sec:multivolume}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item A curvature condition at one geometry says nothing about the stretched lattice a barostat actually visits. This is the central methodological finding of the paper.
+  \item The extra volumes add stability requirements only; they do not move the equilibrium, which stays pinned by Eq.~\eqref{eq:eos}.
+  \item Cost is one undotted Hessian build per volume, amortised over the entire ensemble.
+\end{itemize}
+
+Phonon positivity is imposed not at $a_{\mathrm{eq}}$ alone but on a grid
+spanning the thermal-expansion range,
+\begin{equation}
+  a_v = s_v\,a_{\mathrm{eq}},
+  \qquad s_v \in \{1.00,\,1.02,\,1.04,\,1.06,\,1.08,\,1.10\}.
+  \label{eq:volgrid}
+\end{equation}
+Each $a_v$ carries its own $\{\Phi^{(k,v)}\}$ and $\{D^{(k,v)}(\bm q)\}$; the
+cutting-plane loop pools soft modes over all $v$, and acceptance requires
+$m_v(c) \ge \omega_{\mathrm{cut}}$ for every $v$.
+\code{scripts/uq/bandpath\_committee\_undotted\_Al\_12\_4\_6A\_2\_multivolume.jl}.
+
+\subsection{Rejection sampling, and a cheaper scheme}
+\label{sec:cheap}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item Rejection cannot impose an equality --- zero acceptance probability under a continuous proposal --- so the equality lives in the QP and its relaxation in the predicate. Readers will otherwise trip on this.
+  \item The cheap variant is the practical contribution: physics enters through the \emph{sampler} rather than through a per-observation QP.
+\end{itemize}
+
+A proposal is accepted if it satisfies the Born rows Eq.~\eqref{eq:born}, phonon
+positivity at every volume, and the band
+\begin{equation}
+  \frac{\bigl|b'\cdot(c-c_0)\bigr|}{b''\cdot c_0} \;\le\; \delta ,
+  \label{eq:aeq band}
+\end{equation}
+which to leading order states $|\Delta a_{\mathrm{eq}}| \le \delta$, since
+$\Delta a_{\mathrm{eq}} \simeq -(\mathrm{d}E/\mathrm{d}a)/(\mathrm{d}^{2}E/\mathrm{d}a^{2})$.
+Eq.~\eqref{eq:aeq band} is the continuous relaxation of the equality in
+Eq.~\eqref{eq:eos}.
+
+This suggests a substantially cheaper construction. Rather than solving a
+cutting-plane QP carrying $O(10^{3})$ phonon rows for \emph{every} observation,
+we constrain each member only on the equation of state --- one small QP --- and
+let the rejection sampler enforce phonon positivity using the precomputed
+$\{D^{(k,v)}\}$:
+\begin{enumerate}
+  \item for each observation $i$, solve Eq.~\eqref{eq:qp} with the interpolation row $\tilde X_{i,:}\tilde c = \tilde y_i$ and the rows of Eq.~\eqref{eq:eos}, and \emph{no} phonon rows;
+  \item fit the hypercube Eq.~\eqref{eq:box} to the resulting cloud;
+  \item accept draws satisfying Eq.~\eqref{eq:born}, Eq.~\eqref{eq:aeq band}, and $m_v \ge \omega_{\mathrm{cut}}$ for all $v$.
+\end{enumerate}
+\code{scripts/uq/aeq\_constrained\_pops\_coverage\_Al\_12\_4\_6A\_2.jl}.
+
+\subsection{Validation observables}
+
+\paragraph{Molecular dynamics.} $NPT$ at zero pressure (Langevin thermostat,
+Monte-Carlo barostat), $4\times4\times4$ FCC supercell,
+$T\in\{300,500,700,900\}$~K. The lattice constant and linear expansion
+coefficient are
+\begin{equation}
+  a(T) = \frac{1}{|\mathcal P|}\sum_{f\in\mathcal P}\frac{V_f^{1/3}}{N_{\mathrm{sup}}},
+  \qquad
+  \alpha = \frac{1}{a_0}\frac{\mathrm{d}a}{\mathrm{d}T},
+  \label{eq:alpha}
+\end{equation}
+averaged over production frames $\mathcal P$. Because the cell breathes under the
+barostat, every pair analysis uses each frame's own box for the minimum-image
+convention.
+
+\paragraph{Structural integrity.} Thermal expansion alone does not establish that
+the lattice is still the one you started from. We therefore report the mean
+coordination within a cutoff $r_c$,
+\begin{equation}
+  \langle Z\rangle = \frac{1}{N}\sum_i \bigl|\{\,j\ne i : r_{ij} < r_c\,\}\bigr|,
+  \qquad \text{FCC iff } \langle Z\rangle \ge 12-\tau ,
+  \label{eq:fcc}
+\end{equation}
+together with the radial distribution function, time-averaged over production
+frames with per-frame boxes. $\alpha$ in Eq.~\eqref{eq:alpha} is fitted
+\emph{only} over temperatures satisfying Eq.~\eqref{eq:fcc}.
+\TODO{state in the text that the \emph{mean} coordination is required --- the
+maximum remains at 12 long after the lattice has transformed, which is how a
+transformed cell can be mistaken for thermal expansion.}
+
+\paragraph{Gr\"uneisen parameters.} Following Togo and Tanaka, the mode
+Gr\"uneisen parameter is
+\begin{equation}
+  \gamma_{\bm qj}(V)
+  = -\frac{V}{\omega_{\bm qj}}\frac{\partial\omega_{\bm qj}}{\partial V}
+  = -\frac{V}{2\omega_{\bm qj}^{2}}
+    \sum_{\alpha\beta,jj'} e^{\alpha j*}_{\bm qj}
+    \frac{\partial D^{\alpha\beta}_{jj'}(V,\bm q)}{\partial V}\, e^{\beta j'}_{\bm qj},
+  \label{eq:gruneisen}
+\end{equation}
+the second form being branch-safe because it contracts $\partial D/\partial V$
+against the reference-volume eigenvector rather than differencing sorted
+frequencies. The macroscopic parameter follows by heat-capacity weighting,
+$\gamma = \sum_{\bm qj}\gamma_{\bm qj}C_{\bm qj}/C_V$.
+\code{scripts/uq/gruneisen\_constrained\_vs\_naive\_Al\_12\_4\_6A\_2.jl}.
+
+% ===========================================================================
+\section{Results}
+% ===========================================================================
+
+All results are for a linear ACE model of aluminium (\code{Al\_12\_4\_6A\_2\_},
+$d=91$ parameters, $M=146\,958$ observations, $6$~\AA{} cutoff).
+\TODO{give the basis specification properly: body order, polynomial degree,
+radial basis, and the training set provenance.}
+
+\subsection{Phonon stability at the equilibrium geometry}
+
+The naive POPS ensemble is catastrophically unstable: members exhibit imaginary
+frequencies over much of the Brillouin zone despite each being a legitimate
+perturbation of a well-fitted model. Imposing Eqs.~\eqref{eq:eos},
+\eqref{eq:born} and \eqref{eq:cut row} removes this entirely
+(Fig.~\ref{fig:phonons before and after}).
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{bands_naive.pdf}%
+    \includegraphics[width=0.5\linewidth]{bands_constrained.pdf}
+    \caption{a) Ridge regression solution of Al ACE model with POPS hypercube ensemble. b) Constrained ridge regression solution with constrained POPS hypercube ensemble. The constraints are that the phonon energies along the band-path are greater than 0 eV.}
+    \label{fig:phonons before and after}
+\end{figure}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item Quote the fraction of members with $m(c)<0$: $30/30$ naive versus $0/30$ constrained.
+  \item Emphasise that no additional DFT was used --- the improvement comes entirely from the prior.
+  \item \TODO{state the supercell convergence explicitly: $N_{\mathrm{cell}}=3$ is \emph{not} converged for a 6~\AA{} cutoff (box half-width $\approx$ cutoff gives zone-boundary aliasing); all results here use $N_{\mathrm{cell}}=4$, verified against $N_{\mathrm{cell}}=5$.}
+\end{itemize}
+
+\subsection{Stability across the thermal-expansion range}
+
+Constraining at $a_{\mathrm{eq}}$ alone is insufficient. The softest member of
+the single-volume constrained ensemble is stable at $a_{\mathrm{eq}}$
+($m=+0.278$~THz) yet leaves the FCC lattice within picoseconds of $NPT$ at
+300~K, with $\langle Z\rangle$ falling from $12.00$ to $9.5$ and
+$\Delta E \approx -0.18$~eV/atom. Imposing Eq.~\eqref{eq:volgrid} across six
+volumes gives $0/30$ members unstable at any volume against $30/30$ for the
+naive ensemble.
+
+\begin{table}[h]
+\centering
+\caption{Minimum non-acoustic frequency (THz) over the ensemble at each
+constrained volume.}
+\begin{tabular}{lrrrrrr}
+\toprule
+$s_v$ & 1.00 & 1.02 & 1.04 & 1.06 & 1.08 & 1.10 \\
+\midrule
+naive       & $-8.656$ & $-10.920$ & $-11.471$ & $-10.812$ & $-9.043$ & $-9.077$ \\
+constrained & $+0.252$ & $+0.175$  & $+0.150$  & $+0.166$  & $+0.150$ & $+0.153$ \\
+\bottomrule
+\end{tabular}
+\label{tab:volumes}
+\end{table}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item The soft mode is \emph{not} monotonic in volume: $s=1.04$ binds more strongly than $s=1.06$. Constraining only the endpoints would miss an interior soft spot --- this justifies a grid rather than a two-point bracket.
+  \item The cutting plane drives members onto the margin $\omega_{\mathrm{cut}}$, so \emph{which} member is softest is near-degenerate and not reproducible between runs, while the margin itself is (worst-over-volumes agrees to $10^{-4}$~THz between independent runs). Quote ensemble statistics, not individual member indices.
+\end{itemize}
+
+\subsection{Finite-temperature structural stability}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{fcc_stability_300K.pdf}
+    \caption{Constrained and rejection-sampled member at 300~K. (a) Phonon bands
+    at the $NPT$ lattice constant $a(300\,\mathrm{K})$, entirely positive with
+    $\min\omega = +0.324$~THz. (b) Radial distribution function, time-averaged
+    over 401 production frames, with ideal FCC shells $r_n = a\sqrt{n/2}$ marked.
+    (c) Per-atom coordination distribution: a sharp spike at $Z=12$.}
+    \label{fig:constrained fcc stability}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{fcc_structure_300K.pdf}
+    \caption{As Fig.~\ref{fig:constrained fcc stability} but for the worst
+    unconstrained (naive) POPS member at 300~K: imaginary modes across much of the
+    zone ($\min\omega = -11.37$~THz), an RDF whose peaks do not coincide with any
+    FCC shell, and coordination smeared over $Z=6$--$12$ with
+    $\langle Z\rangle = 9.19$.}
+    \label{fig:naive fcc instability}
+\end{figure}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item These two figures are the core qualitative result: identical analysis, identical temperature, opposite verdict.
+  \item Panel (c) is the cleanest single discriminator --- a spike at 12 versus a smear centred on 9.
+  \item \TODO{state that the transformed phase is neither molten (MSD sub-diffusive, plateauing near $0.9$~\AA$^2$) nor cavitated (a probe-grid scan finds no voids); it is a homogeneous lower-coordination solid at larger volume.}
+\end{itemize}
+
+\subsection{Thermal expansion}
+
+\begin{table}[h]
+\centering
+\caption{Linear thermal expansion coefficient and FCC survival. Leave-one-out
+(LOO) ranges indicate the sensitivity of the fit to individual temperatures.
+Experiment: $\alpha \approx 23\times10^{-6}$~K$^{-1}$ at 300~K rising to
+$\approx26\times10^{-6}$ by 700~K.}
+\begin{tabular}{lrrc}
+\toprule
+member & $\alpha$ ($10^{-6}$K$^{-1}$) & LOO range & FCC survival \\
+\midrule
+naive, worst                  & $41.46$ & $[34.4,\,67.9]$ & $0/4$ \\
+constrained, single volume    & $18.95$ & $[14.8,\,31.7]$ & $0/4$ \\
+constrained, multi-volume     & $26.31$ & $[25.8,\,26.8]$ & $3/4$ \\
+cheap: EOS-QP $+$ rejection   & $ 7.28$ & $[6.26,\,7.56]$ & $4/4$ \\
+\bottomrule
+\end{tabular}
+\label{tab:alpha}
+\end{table}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item The single-volume value ($18.95$) looks respectable but is fitted entirely over a transformed lattice --- a cautionary example of why Eq.~\eqref{eq:fcc} is needed. Its LOO range spans a factor of two.
+  \item The multi-volume member reproduces $\alpha$ to within a few per cent of experiment with a LOO range of $\pm2\%$ and $R^2 = 0.99988$.
+  \item The cheap variant is the most \emph{stable} (4/4 FCC, including 900~K where the multi-volume member fails) but the least accurate in $\alpha$: it is over-stiff. Frame this as a stability/anharmonicity trade-off --- its phonon margin is larger ($+0.255$ against $+0.150$~THz worst-over-volumes), and a stiffer potential both holds FCC better and under-expands.
+  \item The failure at 900~K of the multi-volume member is \emph{not} a harmonic instability: $a(900\,\mathrm{K}) = 1.066\,a_{\mathrm{eq}}$ lies inside the constrained grid and its phonons there are positive ($+0.208$~THz). It is a finite-amplitude, thermally activated transition, which harmonic constraints cannot address by construction. 900~K is also $96\%$ of the melting point.
+  \item \TODO{decide how hard to push the trade-off framing --- it is currently $n=1$ per arm. The ensembles below give it error bars.}
+\end{itemize}
+
+\subsection{Ensemble thermal expansion with POPS uncertainties}
+
+\TODO{Jobs \code{6000161} (constrained) and \code{6000267} (naive) were still
+running at the time of writing; the numbers below are placeholders. Aggregated by
+\code{scripts/uq/npt\_ensemble\_aggregate\_Al\_12\_4\_6A\_2.jl}.}
+
+Six trajectories were run per ensemble --- the constrained mean (respectively the
+regularised least-squares model) plus five members --- with \emph{identical} MD
+seeds at each temperature, so that the spread across members is attributable to
+the parameter vectors rather than to MD noise.
+
+\begin{table}[h]
+\centering
+\caption{Ensemble thermal expansion. \NUM{Placeholder --- awaiting jobs
+6000161 / 6000267.}}
+\begin{tabular}{lccc}
+\toprule
+ensemble & $\alpha$ mean $\pm$ s.d. ($10^{-6}$K$^{-1}$) & range & members retaining FCC \\
+\midrule
+constrained $+$ rejection & \NUM{--} & \NUM{--} & \NUM{--} \\
+naive POPS                & \NUM{--} & \NUM{--} & \NUM{--} \\
+\bottomrule
+\end{tabular}
+\label{tab:ensemble alpha}
+\end{table}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item This is the headline UQ claim: constrained $+$ rejection yields a bounded, physical interval for $\alpha$, whereas naive POPS does not --- for members that do not remain FCC, $\alpha$ is not defined at all.
+  \item The pairing is exact: same committee rows, same MD seeds, so member $k$ differs between ensembles only by the constraint and the rejection step.
+  \item \TODO{if naive members fail to remain FCC, report that as a count rather than excluding them silently --- ``$\alpha$ undefined for $n$ of 5 members'' is itself the result.}
+\end{itemize}
+
+\subsection{Gr\"uneisen parameters}
+
+\TODO{Awaiting the run; see
+\code{scripts/uq/gruneisen\_constrained\_vs\_naive\_Al\_12\_4\_6A\_2.jl}.}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item Mode $\gamma$ along the band path, ensemble mean $\pm1\sigma$, constrained versus naive. Expect the constrained band tight and near $\gamma\approx2$, the naive one scattered with negative $\gamma$ wherever its phonons are imaginary.
+  \item Macroscopic $\gamma(T)$ against the experimental Al value $\approx2.1$--$2.2$.
+  \item Report Eq.~\eqref{eq:gruneisen} against a finite-difference of sorted bands as an internal consistency check (phonopy was not available on this system); disagreement should localise band crossings only.
+  \item $\gamma$ is the microscopic quantity underlying thermal expansion, so this ties the anharmonicity directly to Table~\ref{tab:alpha}.
+\end{itemize}
+
+\subsection{Uncertainty quantification: parity, calibration and coverage}
+\label{sec:uq results}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{energy_parity.pdf}%
+    \includegraphics[width=0.5\linewidth]{force_parity.pdf}
+    \caption{Test-set parity with ensemble min/max error bars.
+    \TODO{state the stride and number of configurations used.}}
+    \label{fig:model parities}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{energy_calibration.pdf}%
+    \includegraphics[width=0.5\linewidth]{force_calibration.pdf}
+    \caption{Calibration: the distribution of test error against the ensemble's
+    own predictive spread, both normalised by the MAE. A well-calibrated ensemble
+    has the two of comparable width.}
+    \label{fig:calibration}
+\end{figure}
+
+On the training set the constrained-plus-rejection ensemble achieves $75.4\%$
+coverage against $70.7\%$ for the naive hypercube \emph{at essentially identical
+interval width} (median width ratio $0.987$): the improvement is in placement,
+not in breadth.
+
+\begin{table}[h]
+\centering
+\caption{Test-set parity and calibration for the three ensemble constructions.
+\NUM{Placeholder --- awaiting the three-way run.}}
+\begin{tabular}{lrrrr}
+\toprule
+construction & RMSE$_E$ & coverage$_E$ & mean width$_E$ & coverage$_F$ \\
+\midrule
+A: EOS-QP $+$ phonon rejection & \NUM{--} & \NUM{--} & \NUM{--} & \NUM{--} \\
+B: naive POPS, no constraints  & \NUM{--} & \NUM{--} & \NUM{--} & \NUM{--} \\
+C: full per-observation repair & \NUM{--} & \NUM{--} & \NUM{--} & \NUM{--} \\
+\bottomrule
+\end{tabular}
+\label{tab:uq}
+\end{table}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item Always report coverage \emph{with} interval width; coverage alone cannot distinguish a well-calibrated ensemble from a merely wider one.
+  \item Construction C is built from only 30 observations and is therefore rank-limited --- Eq.~\eqref{eq:box} spans at most 29 of 91 directions --- and its training coverage collapses to $29.8\%$ with intervals $8\times$ narrower. This is a structural argument for constraining the whole cloud rather than a hand-picked subset, and is independent of any physics.
+  \item Construction A matches B on coverage while being phonon-stable. This is the central UQ claim of the paper.
+  \item \TODO{report test-set coverage as the headline number; training coverage is optimistic by construction.}
+\end{itemize}
+
+\subsection{Computational cost}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item Full per-observation cutting-plane repair costs $\approx8.6$~s per observation with $\sim800$ accumulated constraint rows --- $\sim176$ core-hours for the top-50\% leverage half of this dataset.
+  \item The cheap variant replaces this with one small QP per observation and no cutting-plane loop, moving the physics into the sampler.
+  \item Its dominant cost is instead the rejection acceptance rate; report the funnel, and note that a single volume ($s=1.10$) accounted for $97.8\%$ of rejections --- which suggests adding only that volume's rows to the QP as a middle path.
+  \item \TODO{tabulate wall-clock: ensemble construction, per-member phonon check, $NPT$ validation.}
+  \item Frame the whole comparison against the alternative --- generating more DFT --- which is the motivating argument of the paper.
+\end{itemize}
+
+\subsection{Secondary application: tungsten}
+
+\TODO{This subsection is yours --- I have not worked on the W runs. Suggested
+structure below.}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{eos_with_hist.png}
+    \caption{Bulk Tungsten cell energies for different lattice constants, with histogram detailing the distribution of pair distances in the training data set.}
+    \label{fig:w eos}
+\end{figure}
+
+\paragraph{Points to make.}
+\begin{itemize}
+  \item Non-repulsive core behaviour outside the training distribution --- tie directly to the pair-distance histogram in Fig.~\ref{fig:w eos}.
+  \item Constraints formulated from experimental data rather than DFT, which addresses the poorly-converged-stress argument from the introduction.
+  \item Access to high-pressure conditions the unconstrained model cannot represent.
+  \item \TODO{Pareto fronts (\code{energy\_pareto\_front.png}, \code{force\_pareto\_front.png}) --- what is being traded against what, and where does the constrained model sit?}
+\end{itemize}
+
+\end{document}
