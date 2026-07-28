@@ -91,16 +91,22 @@ elastic(c) = (dot(c11r,c)*eV_to_GPa, dot(c12r,c)*eV_to_GPa, dot(c44r,c)*eV_to_GP
 # ── cross-check the linear route against direct energy evaluation ───────────
 println("── cross-check: linear Δb·c/A against direct E(t)−E(0) ──"); flush(stdout)
 Θchk = readdlm("$SRC/committee_A_cheap_phononreject.csv", ',')
-worst = 0.0
-for k in 1:min(n_check, size(Θchk,1))
-    c = collect(Float64, Θchk[k,:])
-    ACEpotentials.Models.set_linear_parameters!(model, c)
-    direct = gsf_curve(model, element, a_eq; layers=layers, vacuum=vacuum, n_steps=n_steps).gamma
-    lin_g  = gsf_gamma(c)
-    e = maximum(abs.(direct .- lin_g))
-    worst = max(worst, e)
-    @printf("  member %d: max|direct − linear| = %.3e eV/Å²  (γ_us = %.5f)\n", k, e, maximum(lin_g))
+# in a function: a top-level loop would make `worst` a new local on assignment
+function linearity_check(Θchk, n_check)
+    worst = 0.0
+    for k in 1:min(n_check, size(Θchk,1))
+        c = collect(Float64, Θchk[k,:])
+        ACEpotentials.Models.set_linear_parameters!(model, c)
+        direct = gsf_curve(model, element, a_eq; layers=layers, vacuum=vacuum, n_steps=n_steps).gamma
+        lin_g  = gsf_gamma(c)
+        e = maximum(abs.(direct .- lin_g))
+        worst = max(worst, e)
+        @printf("  member %d: max|direct − linear| = %.3e eV/Å²  (γ_us = %.5f)\n", k, e, maximum(lin_g))
+        flush(stdout)
+    end
+    return worst
 end
+worst = linearity_check(Θchk, n_check)
 @printf("  worst over %d members: %.3e eV/Å²  →  %s\n\n", min(n_check,size(Θchk,1)), worst,
         worst < 1e-9 ? "LINEARITY CONFIRMED" : "*** DISCREPANCY — investigate ***"); flush(stdout)
 ACEpotentials.Models.set_linear_parameters!(model, lin)
@@ -127,15 +133,33 @@ for (tag, csv, centre, col) in committees
     @printf("   γ_us   : centre %.5f | members %.5f ± %.5f eV/Å²  (%.1f ± %.1f mJ/m²)\n",
             γus_c, mean(γus), std(γus), mean(γus)*16021.77, std(γus)*16021.77)
     @printf("   C11/C12/C44 (GPa): centre %.1f/%.1f/%.1f\n", Cc...)
-    @printf("   τ_P    : centre %.4f | members %.4f ± %.4f GPa  (range %.4f – %.4f)\n",
-            pnc.tau_P, mean(getfield.(pn,:tau_P)), std(getfield.(pn,:tau_P)),
-            minimum(getfield.(pn,:tau_P)), maximum(getfield.(pn,:tau_P)))
+    # Elastic sanity: a member with G <= 0 or nu outside (-1, 1/2) is elastically
+    # unstable, and the PN prefactor K = G/(1-nu) is then meaningless -- tau_P for such
+    # members must be reported as undefined, not averaged in.
+    Gm  = getfield.(pn, :G); nu = getfield.(pn, :ν); tP = getfield.(pn, :tau_P)
+    badG  = count(<=(0), Gm)
+    badnu = count(v -> !(-1 < v < 0.5), nu)
+    ok    = isfinite.(tP) .& (Gm .> 0) .& (-1 .< nu .< 0.5)
+    @printf("   C_ij span (GPa): C11 %.1f–%.1f, C12 %.1f–%.1f, C44 %.1f–%.1f\n",
+            minimum(getindex.(Cs,1)), maximum(getindex.(Cs,1)),
+            minimum(getindex.(Cs,2)), maximum(getindex.(Cs,2)),
+            minimum(getindex.(Cs,3)), maximum(getindex.(Cs,3)))
+    @printf("   elastically UNSTABLE members: G<=0 in %d/%d, ν outside (-1,½) in %d/%d\n",
+            badG, N, badnu, N)
+    if any(ok)
+        @printf("   τ_P (physical members only, n=%d): %.4f ± %.4f GPa  (range %.4f – %.4f)\n",
+                count(ok), mean(tP[ok]), std(tP[ok]), minimum(tP[ok]), maximum(tP[ok]))
+    else
+        @printf("   τ_P: UNDEFINED for every member — no elastically stable member in this committee\n")
+    end
+    @printf("   centre τ_P = %.4f GPa (G=%.1f, ν=%.3f)\n", pnc.tau_P, pnc.G, pnc.ν)
     @printf("   negative γ_us (unphysical): %d / %d\n\n", count(<(0), γus), N); flush(stdout)
     for k in 1:N
         C = Cs[k]; p = pn[k]
-        push!(rows, @sprintf("%s,%d,%.6f,%.4f,%.2f,%.2f,%.2f,%.2f,%.4f,%.5f",
+        stable = (p.G > 0) && (-1 < p.ν < 0.5) && isfinite(p.tau_P)
+        push!(rows, @sprintf("%s,%d,%.6f,%.4f,%.2f,%.2f,%.2f,%.2f,%.4f,%.5g,%s",
                              tag, k, γus[k], γus[k]*16021.77, C[1], C[2], C[3],
-                             p.G, p.ν, p.tau_P))
+                             p.G, p.ν, p.tau_P, stable))
     end
 end
 
@@ -188,7 +212,8 @@ open("$outdir/gsf_peierls_summary.csv", "w") do io
     println(io, "# rigid {111}<112> GSF at a_eq = $a_eq A, $layers layers, $vacuum A vacuum")
     println(io, "# gamma linear in c: gamma(t) = (Delta_b(t) . c)/A; linearity check max err = $worst eV/A^2")
     println(io, "# PN character = $character, b_partial = $b_partial A")
-    println(io, "committee,member,gamma_us_eV_per_A2,gamma_us_mJ_per_m2,C11_GPa,C12_GPa,C44_GPa,G_GPa,poisson,tau_P_GPa")
+    println(io, "# tau_P is meaningless where G<=0 or nu outside (-1,1/2); elastically_stable flags this")
+    println(io, "committee,member,gamma_us_eV_per_A2,gamma_us_mJ_per_m2,C11_GPa,C12_GPa,C44_GPa,G_GPa,poisson,tau_P_GPa,elastically_stable")
     foreach(r -> println(io, r), rows)
 end
 writedlm("$outdir/gsf_basis_delta.csv",
