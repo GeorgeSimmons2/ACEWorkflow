@@ -406,10 +406,22 @@ $\Delta E \approx -0.18$~eV/atom. Imposing Eq.~\eqref{eq:volgrid} across six
 volumes gives $0/30$ members unstable at any volume against $30/30$ for the
 naive ensemble.
 
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.62\linewidth]{minomega_vs_volume.pdf}
+    \caption{Minimum non-acoustic frequency against lattice constant across the
+    constrained range. Each red curve is one naive POPS member, each grey curve
+    one constrained + rejection-sampled member, and the blue curve the
+    constrained mean. The dotted line is the constraint margin
+    $\omega_{\mathrm{cut}}$. Every naive member crosses zero somewhere in the
+    range; no constrained member does.}
+    \label{fig:minomega vs volume}
+\end{figure}
+
 \begin{table}[h]
 \centering
 \caption{Minimum non-acoustic frequency (THz) over the ensemble at each
-constrained volume.}
+constrained volume; cf.\ Fig.~\ref{fig:minomega vs volume}.}
 \begin{tabular}{lrrrrrr}
 \toprule
 $s_v$ & 1.00 & 1.02 & 1.04 & 1.06 & 1.08 & 1.10 \\
@@ -460,6 +472,22 @@ constrained & $+0.252$ & $+0.175$  & $+0.150$  & $+0.166$  & $+0.150$ & $+0.153$
 
 \subsection{Thermal expansion}
 
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.33\linewidth]{thermal_expansion_naive.pdf}%
+    \includegraphics[width=0.33\linewidth]{thermal_expansion_multivolume.pdf}%
+    \includegraphics[width=0.33\linewidth]{thermal_expansion_cheap.pdf}
+    \caption{$a(T)$ from $NPT$ at zero pressure. Left: worst naive POPS member.
+    Centre: multi-volume constrained member. Right: cheap EOS-QP $+$ rejection
+    member. Filled circles are temperatures at which the lattice remained FCC by
+    Eq.~\eqref{eq:fcc}; crosses are temperatures at which it did not, and are
+    excluded from the fit. The diamond marks the 0~K relaxed $a_0$.
+    \TODO{the naive and single-volume panels have $a_0$ far off the fitted line
+    precisely because every finite-$T$ point is a transformed lattice --- worth
+    pointing out in the caption as the visual signature of the failure.}}
+    \label{fig:thermal expansion}
+\end{figure}
+
 \begin{table}[h]
 \centering
 \caption{Linear thermal expansion coefficient and FCC survival. Leave-one-out
@@ -487,6 +515,18 @@ cheap: EOS-QP $+$ rejection   & $ 7.28$ & $[6.26,\,7.56]$ & $4/4$ \\
   \item The failure at 900~K of the multi-volume member is \emph{not} a harmonic instability: $a(900\,\mathrm{K}) = 1.066\,a_{\mathrm{eq}}$ lies inside the constrained grid and its phonons there are positive ($+0.208$~THz). It is a finite-amplitude, thermally activated transition, which harmonic constraints cannot address by construction. 900~K is also $96\%$ of the melting point.
   \item \TODO{decide how hard to push the trade-off framing --- it is currently $n=1$ per arm. The ensembles below give it error bars.}
 \end{itemize}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.6\linewidth]{minomega_vs_lattice_multivolume.pdf}
+    \caption{Soft-mode frequency against lattice constant for the multi-volume
+    constrained member. The shaded region is the constrained range
+    Eq.~\eqref{eq:volgrid}; squares are the 0~K constrained volumes and circles
+    the lattice constants visited under $NPT$. The 900~K point lies inside the
+    constrained range with positive phonons, confirming that the loss of FCC
+    there is finite-amplitude rather than a harmonic instability.}
+    \label{fig:minomega vs lattice}
+\end{figure}
 
 \subsection{Ensemble thermal expansion with POPS uncertainties}
 
