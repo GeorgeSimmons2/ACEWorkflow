@@ -69,6 +69,7 @@ Q6_SOLID  = 0.35     # per-atom crystalline threshold
 FRAC_MIN  = 0.80     # fraction of atoms that must exceed it
 N_FRAMES  = 4        # equilibrated frames averaged over (end of trajectory)
 TEMPS     = (300, 500, 700, 900)
+D_LIQUID_AL = 5e-9   # m^2/s, liquid Al near T_m -- reference for the melting test
 
 
 def read_extxyz_tail(path, n_frames):
@@ -124,6 +125,33 @@ def q6bar(cell, pos, nrep=NREP):
     return np.sqrt(4 * np.pi / 13 * (np.abs(qb) ** 2).sum(1)), a
 
 
+def diffusion(path):
+    """Self-diffusion coefficient in m^2/s from MSD = 6*D*t over the second half.
+
+    Distinguishes melting from the solid-solid transformation into the competing
+    low-coordination phase. Across this ensemble the maximum is ~1.2e-10, i.e. ~2%
+    of liquid Al's 5e-9, so nothing melts -- every disordered state is a sluggish
+    solid.
+
+    NOTE: this cannot detect a transformation that completed during equilibration.
+    member_3 at 300 K has D = 0 in the production window yet q6bar = 0.248: it
+    transformed early and then sat rigid. Use D only to rule melting in or out;
+    the structural verdict comes from q6bar.
+    """
+    if not os.path.exists(path):
+        return float('nan')
+    t, m = [], []
+    with open(path) as fh:
+        for r in csv.DictReader(l for l in fh if not l.startswith('#')):
+            t.append(float(r['t_fs'])); m.append(float(r['msd_A2']))
+    if len(t) < 4:
+        return float('nan')
+    t, m = np.array(t), np.array(m)
+    h = len(t) // 2
+    slope = np.polyfit(t[h:], m[h:], 1)[0]      # A^2/fs
+    return max(slope, 0.0) / 6 * 1e-5           # -> m^2/s
+
+
 def read_summary(path):
     """{T_K: (a, a_std)} from the MD driver's production-window averages."""
     d = {}
@@ -149,8 +177,9 @@ def fit_alpha(T, A, S, a0):
 def main(root):
     runs = sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)))
     out = []
-    print(f"{'run':17s} {'T':>5s} {'a':>8s} {'q6bar':>15s} {'ordered':>8s}  verdict")
-    print("-" * 74)
+    print(f"{'run':17s} {'T':>5s} {'a':>8s} {'q6bar':>15s} {'ordered':>8s} "
+          f"{'D m2/s':>9s}  verdict")
+    print("-" * 86)
     for run in runs:
         summ = read_summary(os.path.join(root, run, "thermal_expansion_summary.csv"))
         rows = []
@@ -162,11 +191,14 @@ def main(root):
             vals = np.concatenate([q6bar(c, x)[0] for c, x in frames])
             # production-window average, not the few frames used for q6bar
             a, a_std = summ.get(T, (float('nan'), float('nan')))
+            D = diffusion(os.path.join(root, run, f"T{T}K", "msd.csv"))
             frac = float(np.mean(vals > Q6_SOLID))
             cry = frac >= FRAC_MIN
-            rows.append((T, a, a_std, vals.mean(), vals.std(), frac, cry))
+            rows.append((T, a, a_std, vals.mean(), vals.std(), frac, cry, D))
+            state = ("crystalline" if cry else
+                     "LIQUID" if D > 0.3 * D_LIQUID_AL else "TRANSFORMED (solid)")
             print(f"{run:17s} {T:5d} {a:8.4f} {vals.mean():7.3f} +- {vals.std():5.3f} "
-                  f"{100*frac:7.1f}%  {'crystalline' if cry else 'DISORDERED'}")
+                  f"{100*frac:7.1f}% {D:9.1e}  {state}")
         if not rows:
             continue
         # the crystalline count is a property of the trajectories alone and must not
@@ -186,8 +218,8 @@ def main(root):
             why = "run still in progress" if not summ else "fewer than 2 crystalline points"
             print(f"{'':17s} -> crystalline {len(cr)}/{len(rows)}   "
                   f"alpha not fittable ({why})")
-        for (T, a, a_std, m, s, f, cry) in rows:
-            out.append((run, T, a, m, s, f, cry, alpha, se))
+        for (T, a, a_std, m, s, f, cry, D) in rows:
+            out.append((run, T, a, m, s, f, cry, alpha, se, D))
         print()
 
     dest = os.path.join(root, "fcc_order_verdict.csv")
@@ -204,12 +236,14 @@ def main(root):
                  "alpha is a weighted fit over crystalline temperatures only\n")
         w = csv.writer(fh, lineterminator="\n")
         w.writerow(["run", "T_K", "a_Ang", "q6bar_mean", "q6bar_std",
-                    "frac_ordered", "crystalline", "alpha_1e6_per_K", "alpha_se_1e6_per_K"])
+                    "frac_ordered", "crystalline", "alpha_1e6_per_K", "alpha_se_1e6_per_K",
+                    "D_m2_per_s", "melted"])
         for r in out:
             w.writerow([r[0], r[1], f"{r[2]:.6f}", f"{r[3]:.4f}", f"{r[4]:.4f}",
                         f"{r[5]:.4f}", str(r[6]).lower(),
                         "" if math.isnan(r[7]) else f"{r[7]:.2f}",
-                        "" if math.isnan(r[8]) else f"{r[8]:.2f}"])
+                        "" if math.isnan(r[8]) else f"{r[8]:.2f}",
+                        f"{r[9]:.3e}", str(r[9] > 0.3 * D_LIQUID_AL).lower()])
     print(f"wrote {dest}")
 
 
