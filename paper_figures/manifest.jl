@@ -215,6 +215,25 @@ const FIGURES = [
    names on disk still say `naive`, and the output filename is unchanged
    (fcc_compare_constrained_vs_naive_300K) so existing \\includegraphics keep resolving.
 
+   IS THE UNDOTTED HESSIAN FAIR TO THE UNCONSTRAINED MEMBER?  Yes, and the answer is
+   worth having to hand — it is the first thing a referee will ask.  Neither member is
+   pinned to a_eq here.  Each gets its OWN band path built at its OWN NPT-measured
+   a(300 K): a_con = 4.07786 Å, a_nai = 4.16663 Å, two separate bandpath_Dk calls (the
+   two cache filenames differ, which is the tell).  H_k = ∂²B_k/∂r² is geometry-only, so
+   built at a given `a` and contracted with θ it reproduces a native build at that
+   geometry to ~1e-16 — "undotted" costs no accuracy, the only question is ever whether
+   the geometry is right.  Here it is each member's own measured lattice constant, not
+   an assumed one, which is MORE favourable to the unconstrained member than using its
+   0 K a_eq would have been.
+
+   Two caveats that are not unfairness but should be stated in the caption:
+     • Quasi-harmonic — harmonic phonons at the thermally expanded lattice constant, not
+       the true anharmonic 300 K spectrum.  Applies identically to both members.
+     • The unconstrained member's 300 K structure is NO LONGER FCC (that is what its RDF
+       panel shows).  Its FCC dispersion therefore describes the ideal FCC reference at
+       that volume — the diagnostic for WHY it left FCC, not a description of what it
+       actually holds.
+
    The RDFs are read from the CSVs written by the two original figure scripts, so the
    histograms are byte-identical to the published panels — the trajectories (~13M pair
    evaluations each) are not reprocessed.  The band structures ARE recomputed, but
