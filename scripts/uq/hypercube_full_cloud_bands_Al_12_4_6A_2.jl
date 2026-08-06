@@ -131,28 +131,40 @@ println("\n── dispersion: actual members vs hypercube draws ──")
 @printf("  → sampled/actual median ω_max ratio = %.2f\n", median(hi_s)/median(hi_a))
 flush(stdout)
 
-# ── figure: MLST-sized text ──────────────────────────────────────────────────
-# Built at 540 pt wide = the width it will be displayed at, so no rescaling.
+# ── figures: MLST-sized text ─────────────────────────────────────────────────
+# FIGW is the width each figure will be DISPLAYED at, in points.  Fonts stay at
+# 13/12/11 pt whatever FIGW is — that is the entire point of building at final size.
+# Shared by the bands, parity and calibration figures.  The 540 pt default assumes
+# each figure spans \linewidth on its own; for a half-width slot rebuild with
+# FIGW=260 rather than scaling in LaTeX, and do NOT add a width= factor either way.
+FIGW = parse(Float64, get(ENV, "FIGW", "540"))
 BLU = RGBf(0.0, 0.447, 0.698); GRY = RGBAf(0.45, 0.45, 0.45, 0.35)
 TITLE, LAB, TICK = 13, 12, 11
 
+# Y-LIMITS ARE DELIBERATELY SHARED, computed over BOTH committees.  These are two
+# separate files now, so nothing forces them onto a common axis any more; without this
+# each would autoscale to its own spread and the narrow committee would look just as
+# dispersed as the wide one.  The whole comparison is how much WIDER the box built from
+# 73k deltas is, so keep this if you change what is plotted.
 F_all = vcat([bands(θ, bp) for θ in mem_full], [bands(θ, bp) for θ in mem_30])
 lo = minimum(minimum.(F_all)); hi = maximum(maximum.(F_all))
 pad = 0.06*(hi-lo); ylim = (min(lo-pad, -0.4), hi+pad)
 
-fig = Figure(size=(540, 350), figure_padding=(6, 10, 4, 6))
-# Both panels are constrain → hypercube → rejection-sample. They differ ONLY in
-# which set of constrained deltas the hypercube was built from, so the titles say
-# that rather than naming the panels after their source cloud.
-Label(fig[1, 1:2],
-      "constrained POPS deltas → hypercube → rejection sample (30 drawn)";
-      fontsize=TICK, padding=(0, 0, 0, 2))
-for (col, (members, ttl, acc)) in enumerate((
-        (mem_full, "hypercube from $(size(Θ_full,2)) deltas", acc_f),
-        (mem_30,   "hypercube from $(size(Θ_30,2)) deltas",   acc_3)))
-    ax = Axis(fig[2, col]; xlabel="Wave vector",
-              ylabel = col == 1 ? "Frequency (THz)" : "",
-              title=ttl, titlesize=TITLE, xlabelsize=LAB, ylabelsize=LAB,
+# One figure per hypercube type.  Both are constrain → hypercube → rejection-sample
+# and differ ONLY in which set of constrained deltas the hypercube was built from, so
+# the title says that rather than naming the figure after its source cloud.
+function bands_figure(members, ttl, acc, tag)
+    fig = Figure(size=(FIGW, 0.62FIGW), figure_padding=(6, 10, 4, 6))
+    Label(fig[1, 1],
+          "constrained POPS deltas → hypercube → rejection sample ($(length(members)) drawn)";
+          fontsize=TICK, padding=(0, 0, 0, 2))
+    # Acceptance goes in the TITLE, not a corner annotation as in the legacy combined
+    # figure.  ylim is the data max plus 6%, so the top band always sits at ~94% height
+    # and a top-right label lands on it; bottom-right collides with the Γ tick label and
+    # the zero line.  A single-panel figure has the title width to spare, so use it.
+    ax = Axis(fig[2, 1]; xlabel="Wave vector", ylabel="Frequency (THz)",
+              title="$ttl  —  accept $(round(acc; digits=2))%",
+              titlesize=TITLE, xlabelsize=LAB, ylabelsize=LAB,
               xticklabelsize=TICK, yticklabelsize=TICK,
               xticks=(bp.x_ticks, bp.labels), xgridvisible=false, ygridvisible=false,
               xtickalign=1, ytickalign=1, xticksize=4, yticksize=4)
@@ -165,17 +177,17 @@ for (col, (members, ttl, acc)) in enumerate((
     hlines!(ax, [0.0]; color=:black, linestyle=:dash, linewidth=1.0)
     vlines!(ax, bp.x_ticks; color=(:black, 0.22), linewidth=0.7)
     xlims!(ax, first(bp.x_vals), last(bp.x_vals)); ylims!(ax, ylim...)
-    col == 2 && hideydecorations!(ax; grid=false, ticks=false, minorticks=false)
-    text!(ax, 0.03, 0.97; text=(col==1 ? "(a)" : "(b)"), space=:relative,
-          align=(:left,:top), font=:bold, fontsize=TITLE)
-    # top-right: bottom-right collides with the Γ tick label and the zero line
-    text!(ax, 0.97, 0.97; text="accept $(round(acc; digits=2))%", space=:relative,
-          align=(:right,:top), fontsize=TICK-1, color=:gray30)
+    rowgap!(fig.layout, 1, 2)
+    save("$outdir/bands_$(tag).pdf", fig)
+    save("$outdir/bands_$(tag).png", fig; px_per_unit=4)
+    @printf("bands   [%-10s] → %s/bands_%s.{pdf,png}\n", tag, outdir, tag)
 end
-colgap!(fig.layout, 20)      # 8 let panel (a)'s "K" collide with panel (b)'s "Γ"
-save("$outdir/bands_hypercube_full_cloud.pdf", fig)
-save("$outdir/bands_hypercube_full_cloud.png", fig; px_per_unit=4)
-@printf("\nfigure → %s/bands_hypercube_full_cloud.{pdf,png}\n", outdir)
+# Tags match the parity/calibration figures.  NOT bands_hypercube_full_cloud: that was
+# the legacy COMBINED figure, and reusing its name for a single-cloud figure would
+# silently change what an existing \includegraphics resolves to.  It is left on disk.
+bands_figure(mem_full, "hypercube from $(size(Θ_full,2)) deltas", acc_f, "fullcloud")
+bands_figure(mem_30,   "hypercube from $(size(Θ_30,2)) deltas",   acc_3, "forest30")
+flush(stdout)
 
 writedlm("$outdir/committee_rejection_full_cloud.csv", reduce(hcat, mem_full)', ',')
 
@@ -206,14 +218,8 @@ end
 # panels, (a) energy and (b) force, so the two hypercube types can be placed, sized
 # and captioned independently.  The cloud identity moves from a per-row ylabel to a
 # figure-level label, which also lets the ylabels go back to plain units.
-#
-# SIZING.  FIGW is the width the figure will be DISPLAYED at, in points.  Fonts stay
-# at 13/12/11 pt whatever FIGW is — that is the entire point of building at final
-# size.  The 540 pt default assumes each figure spans \linewidth on its own.  If you
-# place the two side by side at 0.5\linewidth, rebuild with FIGW=260 rather than
-# scaling in LaTeX; do NOT add a width= factor to \includegraphics either way.
-FIGW = parse(Float64, get(ENV, "FIGW", "540"))
-ORN  = RGBf(0.835, 0.369, 0.0)
+# Same treatment as the bands figures above; FIGW is defined there and shared.
+ORN = RGBf(0.835, 0.369, 0.0)
 #
 # NOTE ON FILENAMES.  The tags are `fullcloud`/`forest30`, deliberately NOT
 # `full_cloud`: the legacy COMBINED figures were parity_full_cloud.{pdf,png} and
