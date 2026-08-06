@@ -53,6 +53,23 @@ is 5.2 GB and drives a ~15–20 GB memory peak; `models/Al_12_4_6A_2_/A.csv` is 
 | `fullcloud_bands_parity_calibration` | `scripts/uq/hypercube_full_cloud_bands_Al_12_4_6A_2.jl` | Constrained POPS scaled to the full leverage cloud — committee phonon bands, plus test-set parity and calibration for both hypercube types |
 | `pinned_rejection_phonons` | `scripts/uq/pinned_hypercube_rejection_Al_20_4_6A_3.jl` | a_eq-pinned committee, no-rejection vs rejection sampling, side by side on the undotted 4×4×4 band path |
 | `naive_vs_constrained_bands` | `scripts/uq/naive_vs_constrained_fullcloud_Al_12_4_6A_2.jl` | Unconstrained vs constrained POPS committee bands on one shared frequency axis — **run `fullcloud_bands_parity_calibration` first**, this reuses its committee |
+| `fcc_compare_300K` | `scripts/uq/fcc_compare_figure_Al_12_4_6A_2.jl` | FCC stability under NPT at 300 K — dispersions overlaid, unconstrained RDF above the constrained one. **Multi-volume line**, not the full-cloud one |
+| `al20_parity_calibration` | `scripts/uq/parity_calibration_pinned_Al_20_4_6A_3.jl` | Parity and calibration for the two Al_20 pinned committees — **run `pinned_rejection_phonons` first** |
+
+Two constraint studies run in parallel through this repository and should not be
+conflated in captions:
+
+- **a_eq only** — the full-cloud line. `fullcloud_bands_parity_calibration` and
+  `naive_vs_constrained_bands`. Constraints (Born rows, `b′·θ = 0` as a hard equality in
+  the cutting-plane QP, phonon stability) are all imposed at the single relaxed lattice
+  constant.
+- **Multi-volume** — `fcc_compare_300K`. Phonon stability imposed from a_eq out to
+  1.1·a_eq, which is what survives NPT. An a_eq-only member can satisfy every constraint
+  and still leave FCC once the cell is allowed to expand.
+
+Shared plotting code lives in `scripts/uq/lib_parity_calibration.jl` (parity and
+calibration, used by both the Al_12 and Al_20 entries) and
+`scripts/bandpath_phonon_uq/lib.jl` (band paths, committee predictions).
 
 ### Dependency chain
 

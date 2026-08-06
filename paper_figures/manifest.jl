@@ -59,6 +59,7 @@ const FIGURES = [
     "73,411 cutting-plane-constrained stable members, ~55 MB"),
    ("data/Al/manual_df_test_Al.xyz", :external, "held-out test set, ~18 MB"),
    ("scripts/bandpath_phonon_uq/lib.jl", :repo, "included helper library"),
+   ("scripts/uq/lib_parity_calibration.jl", :repo, "shared parity/calibration plotting"),
  ],
  notes   = """
    Rejection sampling here uses the FULL constraint funnel: Born rows (c44, c11−c12,
@@ -173,6 +174,99 @@ const FIGURES = [
    deep-copied model each (native evaluation mutates the model, so a shared one is a
    data race).  Seeded; no OSQP in the naive path, so the naive committee is exactly
    reproducible.  The constrained committee is whatever the fullcloud run produced.
+   """,
+),
+
+(
+ id      = "fcc_compare_300K",
+ title   = "FCC stability under NPT at 300 K: phonon dispersion of the constrained and "*
+           "unconstrained members overlaid on one axis, with the RDF of each — "*
+           "unconstrained above (leaves FCC), constrained below (survives)",
+ script  = "scripts/uq/fcc_compare_figure_Al_12_4_6A_2.jl",
+ cmd     = "julia --project -t 8 scripts/uq/fcc_compare_figure_Al_12_4_6A_2.jl 300",
+ env     = ["FIGW" => "540  # display width in pt; fonts stay 11-13"],
+ outputs = ["models/Al_12_4_6A_2_/results/fcc_compare_constrained_vs_naive_300K.pdf",
+            "models/Al_12_4_6A_2_/results/fcc_compare_constrained_vs_naive_300K.png"],
+ inputs  = [
+   ("models/Al_12_4_6A_2_/Al_12_4_6A_2.json", "scripts/model_building/build_model.jl", "fitted ACE model"),
+   ("models/Al_12_4_6A_2_/lin_params.csv",    "scripts/model_building/build_model.jl", "mean-fit coefficients"),
+   ("models/Al_12_4_6A_2_/results/bandpath_undotted_multivolume/theta_npt_softest.csv",
+    "scripts/uq/npt_multivolume_member_Al_12_4_6A_2.jl",
+    "the MULTI-VOLUME constrained member (a_eq → 1.1·a_eq) — not the full-cloud committee"),
+   ("models/Al_12_4_6A_2_/results/npt_thermal_expansion_naive_worst_member/theta_naive_worst.csv",
+    "scripts/uq/fcc_instability_figure_Al_12_4_6A_2.jl", "the unconstrained worst member"),
+   ("models/Al_12_4_6A_2_/results/npt_multivolume_softest/thermal_expansion_summary.csv",
+    "scripts/uq/fcc_stability_figure_Al_12_4_6A_2.jl", "a(T) for the constrained member"),
+   ("models/Al_12_4_6A_2_/results/npt_thermal_expansion_naive_worst_member/thermal_expansion_summary.csv",
+    "scripts/uq/fcc_instability_figure_Al_12_4_6A_2.jl", "a(T) for the unconstrained member"),
+   ("models/Al_12_4_6A_2_/results/npt_multivolume_softest/rdf_300K.csv",
+    "scripts/uq/fcc_stability_figure_Al_12_4_6A_2.jl", "RDF, reused so the histogram is byte-identical to the published panel"),
+   ("models/Al_12_4_6A_2_/results/npt_thermal_expansion_naive_worst_member/rdf_300K.csv",
+    "scripts/uq/fcc_instability_figure_Al_12_4_6A_2.jl", "RDF, likewise"),
+   ("scripts/bandpath_phonon_uq/lib.jl", :repo, "included helper library"),
+ ],
+ notes   = """
+   THIS IS THE MULTI-VOLUME LINE, not the full-cloud one.  The constrained member here
+   comes from the a_eq → 1.1·a_eq constrained study; the full-cloud committee behind
+   fullcloud_bands_parity_calibration and naive_vs_constrained_bands is constrained at
+   a_eq ONLY.  Do not conflate the two when writing the caption.
+
+   Terminology in the figure is constrained / UNCONSTRAINED.  The directory and file
+   names on disk still say `naive`, and the output filename is unchanged
+   (fcc_compare_constrained_vs_naive_300K) so existing \\includegraphics keep resolving.
+
+   The RDFs are read from the CSVs written by the two original figure scripts, so the
+   histograms are byte-identical to the published panels — the trajectories (~13M pair
+   evaluations each) are not reprocessed.  The band structures ARE recomputed, but
+   undotted_Hbasis() hits its cache at both lattice constants, so no Hessian is rebuilt.
+   If those caches are absent the run is much longer.
+
+   Fast model load by default (JSON + lin_params.csv, skipping the 259 MB A.csv, which
+   nothing here needs).  Pass a second argument "full" to force the real loader.
+   """,
+),
+
+(
+ id      = "al20_parity_calibration",
+ title   = "Test-set parity and calibration for the two Al_20_4_6A_3 pinned committees, "*
+           "naive and rejection-sampled — what the physics constraint costs in "*
+           "predictive spread",
+ script  = "scripts/uq/parity_calibration_pinned_Al_20_4_6A_3.jl",
+ cmd     = "julia --project -t 8 scripts/uq/parity_calibration_pinned_Al_20_4_6A_3.jl 20",
+ env     = ["FIGW" => "540  # display width in pt; fonts stay 13/12/11"],
+ outputs = ["models/Al_20_4_6A_3_/results/pinned_hypercube_rejection/parity_calibration/parity_naive.pdf",
+            "models/Al_20_4_6A_3_/results/pinned_hypercube_rejection/parity_calibration/parity_rejected.pdf",
+            "models/Al_20_4_6A_3_/results/pinned_hypercube_rejection/parity_calibration/calibration_naive.pdf",
+            "models/Al_20_4_6A_3_/results/pinned_hypercube_rejection/parity_calibration/calibration_rejected.pdf",
+            "models/Al_20_4_6A_3_/results/pinned_hypercube_rejection/parity_calibration/parity_calibration_summary.csv",
+            "models/Al_20_4_6A_3_/results/pinned_hypercube_rejection/parity_calibration/parity_calibration_predictions.jls"],
+ inputs  = [
+   ("models/Al_20_4_6A_3_/Al_20_4_6A_3.json", "scripts/model_building/build_model.jl", "fitted ACE model, 1829 params"),
+   ("models/Al_20_4_6A_3_/lin_params.csv",    "scripts/model_building/build_model.jl", "mean-fit coefficients"),
+   ("models/Al_20_4_6A_3_/results/pinned_hypercube_rejection/samples_naive.csv",
+    "scripts/uq/pinned_hypercube_rejection_Al_20_4_6A_3.jl", "50 members, no rejection"),
+   ("models/Al_20_4_6A_3_/results/pinned_hypercube_rejection/samples_rejected.csv",
+    "scripts/uq/pinned_hypercube_rejection_Al_20_4_6A_3.jl", "50 members, predicate applied"),
+   ("data/Al/manual_df_test_Al.xyz", :external, "held-out test set, ~18 MB"),
+   ("scripts/bandpath_phonon_uq/lib.jl", :repo, "included helper library"),
+   ("scripts/uq/lib_parity_calibration.jl", :repo, "shared parity/calibration plotting"),
+ ],
+ notes   = """
+   RUN THE pinned_rejection_phonons ENTRY FIRST — this plots the committees it writes.
+
+   Same plotting code as the Al_12 figures: both scripts include
+   scripts/uq/lib_parity_calibration.jl, so the two sets cannot drift apart in styling.
+
+   Both committees use point_params = lin_params, so the point prediction is identical
+   and the deviation histograms are directly comparable.  Read it as:
+     RMSE      should barely move — same mean model on both sides.
+     COVERAGE  is the number.  Rejection removes members, so the envelope narrows and
+               coverage can only fall; how far it falls is what the constraint costs.
+   Coverage is committee min/max envelope containment, NOT a calibrated interval — a
+   relative measure between the two columns, not an absolute calibration claim.
+
+   Fast model load: skips the 5.2 GB A.csv, which committee_predictions does not need.
+   Second positional argument "full" forces the real loader; first is the test stride.
    """,
 ),
 

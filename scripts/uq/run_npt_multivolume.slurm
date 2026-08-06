@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=20
 #SBATCH --mem-per-cpu=32000
-#SBATCH --time=12:00:00
+#SBATCH --time=08:00:00
 #SBATCH --output=npt_multivol_Al12_%j.log
 
 # NPT thermal expansion (0 Pa, 300–900 K, 4×4×4) on a member of the MULTI-VOLUME

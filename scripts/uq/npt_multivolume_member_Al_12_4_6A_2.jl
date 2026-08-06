@@ -27,13 +27,19 @@ using Molly, Random
 using AtomsBuilder: bulk
 Random.seed!(1234)
 
+# Julia BLOCK-BUFFERS stdout when it is not a TTY, so under SLURM this job writes
+# nothing to its .log until the buffer fills or the process exits — a ~4.5 h run
+# looks dead the whole time.  Background flusher plus explicit flushes at each
+# milestone below.
+@async while true; flush(stdout); flush(stderr); sleep(5); end
+
 element        = :Al
 dataset        = ""
 N_cell_fc      = 4
 N_per_seg      = [20, 20, 20, 20, 60]
 vol_scales     = collect(1.00:0.02:1.10)      # must match the committee run
 committee_subdir = "bandpath_undotted_multivolume"
-npt_member     = :softest                     # :softest | :median | an Int index into committee_rejection.csv
+npt_member     = :cheap_rej                     # :softest | :median | an Int index into committee_rejection.csv
 
 supercell      = (4, 4, 4)
 temperatures_K = [300.0, 500.0, 700.0, 900.0]
@@ -52,16 +58,19 @@ cluster_cutoff = 2.2
 
 result = load_model(element, 12, 4, 6, 2; dataset_name=dataset)
 model  = result.model; lin_params = result.lin_params; n_params = length(lin_params)
-committee_dir = "$(result.dir)/results/$committee_subdir"
+committee_dir = "$(result.dir)/results/aeq_cheap_vs_expensive"
 tag    = npt_member isa Integer ? "rejection$(npt_member)" : string(npt_member)
-outdir = "$(result.dir)/results/npt_multivolume_$(tag)"; mkpath(outdir)
+outdir = "$(result.dir)/results/npt_multivolume_a_eq_con_then_rejection"; mkpath(outdir)
 @printf("Model %s: %d params, %d threads.  Outputs → %s\n", result.name, n_params, Threads.nthreads(), outdir)
+flush(stdout)
 
 # ── load the chosen member ──────────────────────────────────────────────────
 θ_npt = if npt_member === :softest
     vec(readdlm("$committee_dir/theta_npt_softest.csv", ','))
 elseif npt_member === :median
     vec(readdlm("$committee_dir/theta_npt_median.csv", ','))
+elseif npt_member === :cheap_rej
+    vec(readdlm("$committee_dir/committee_A_cheap_phononreject.csv", ',')[15,:])
 elseif npt_member isa Integer
     collect(Float64, readdlm("$committee_dir/committee_rejection.csv", ',')[npt_member, :])
 else
@@ -69,17 +78,20 @@ else
 end
 length(θ_npt) == n_params || error("θ has $(length(θ_npt)) entries, expected $n_params")
 @printf("NPT member: %s  (from %s)\n", tag, committee_dir)
+flush(stdout)
 
 # ── stability of this member across the constrained volume range ────────────
 a_mean = ACEWorkflow.relax_lattice_constant(model, element)
 a_list = a_mean .* vol_scales
 @printf("a_mean = %.5f Å.  Checking the member at the %d constrained volumes …\n", a_mean, length(a_list))
+flush(stdout)
 bps_vol = [bandpath_Dk(result, model, element, a, N_cell_fc; N_per_seg=N_per_seg) for a in a_list]
 minω_constrained_vols = [min_freq_stable(θ_npt, bp) for bp in bps_vol]
 for (v, a) in enumerate(a_list)
     @printf("  a = %.5f Å (%.0f%%): min ω = %+.3f THz\n", a, 100*vol_scales[v], minω_constrained_vols[v])
 end
 @printf("  worst over constrained range: %+.3f THz\n", minimum(minω_constrained_vols))
+flush(stdout)
 
 # ── its own 0 K equilibrium + phonons there ─────────────────────────────────
 ACEpotentials.Models.set_linear_parameters!(model, θ_npt)
@@ -90,10 +102,12 @@ catch e
     @warn "relax_lattice_constant failed ($e); using a_mean"; a_mean
 end
 @printf("NPT member 0 K relaxed a₀ = %.5f Å\n", a0)
+flush(stdout)
 bp_a0    = bandpath_Dk(result, model, element, a0, N_cell_fc; N_per_seg=N_per_seg)
 minω_a0  = min_freq_stable(θ_npt, bp_a0)
 bands_a0 = bands(θ_npt, bp_a0)
 @printf("NPT member 0 K phonons at a₀: min ω = %+.3f THz\n", minω_a0)
+flush(stdout)
 
 _savepub(fig, stem) = (save("$stem.pdf", fig); save("$stem.png", fig; px_per_unit=4))
 
@@ -251,6 +265,7 @@ for (ti, T_K) in enumerate(temperatures_K)
     sim = Molly.Langevin(dt=dt, temperature=T, friction=friction,
                          coupling=Molly.MonteCarloBarostat(pressure, T, sys_md.boundary))
     @printf("  T = %4.0f K: %d equil + %d prod steps …\n", T_K, n_equil, n_prod)
+    flush(stdout)
     el = @elapsed Molly.simulate!(sys_md, sim, n_equil + n_prod)
 
     dir = "$outdir/T$(round(Int,T_K))K"
@@ -263,13 +278,16 @@ for (ti, T_K) in enumerate(temperatures_K)
     if ti == length(temperatures_K); bands_hi = bands(θ_npt, bp_aT); a_hi = ana.a_T; end
     @printf("    a(%.0f K) = %.5f ± %.5f Å  (Δa/a₀ = %+.2f%%),  ⟨T⟩ = %.0f K,  min ω = %+.3f THz  [%.1f min]\n",
             T_K, ana.a_T, ana.a_T_std, 100*(ana.a_T-a0)/a0, ana.mean_T, mω, el/60)
+    flush(stdout)
     @printf("    structure: ⟨coord⟩ = %.2f (FCC 12), median NN = %.3f Å  →  %s\n",
             ana.mean_coord, ana.med_nn,
             ana.still_fcc ? "STILL FCC ✓" : "*** LEFT FCC — a(T) is NOT thermal expansion ***")
+    flush(stdout)
 end
 
 n_fcc = count(fcc_of_T)
 @printf("\n  FCC survived at %d / %d temperatures\n", n_fcc, length(temperatures_K))
+flush(stdout)
 
 # ── money plot B: phonons at a₀ vs highest-T a ──────────────────────────────
 let ylo = min(minimum(bands_a0), minimum(bands_hi)), yhi = max(maximum(bands_a0), maximum(bands_hi))

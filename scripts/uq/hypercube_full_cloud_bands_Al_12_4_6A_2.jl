@@ -205,101 +205,24 @@ pr_3 = committee_predictions(model, mem_30,   TEST; stride=stride, point_params=
 cover(t, lo, hi) = 100*(1 - mean((t .< lo) .| (t .> hi)))
 rmse(p, t)       = sqrt(mean((p .- t).^2))
 
-function parity!(ax, t, p, lo, hi, col)
-    l = extrema([t; p])
-    lines!(ax, collect(l), collect(l); color=:black, linestyle=:dash, linewidth=1.0)
-    errorbars!(ax, t, p, p .- lo, hi .- p; whiskerwidth=4, linewidth=0.7, color=(col, 0.35))
-    scatter!(ax, t, p; color=(col, 0.9), markersize=4)
-end
-
-# ── SPLIT FIGURES (the only change from the legacy script) ───────────────────
-# Legacy put both clouds in ONE 2×2 parity figure (rows = cloud, cols = energy/force)
-# and one 3-row calibration figure.  Here each cloud gets its OWN figure with two
-# panels, (a) energy and (b) force, so the two hypercube types can be placed, sized
-# and captioned independently.  The cloud identity moves from a per-row ylabel to a
-# figure-level label, which also lets the ylabels go back to plain units.
-# Same treatment as the bands figures above; FIGW is defined there and shared.
-ORN = RGBf(0.835, 0.369, 0.0)
+# ── SPLIT FIGURES ────────────────────────────────────────────────────────────
+# One figure per hypercube type, each with two panels, (a) energy and (b) force, so the
+# two can be placed, sized and captioned independently.  The plotting machinery lives in
+# lib_parity_calibration.jl — extracted there so the Al_12 and Al_20 figures cannot
+# drift apart in styling.  FIGW is defined with the bands figures above and shared.
 #
 # NOTE ON FILENAMES.  The tags are `fullcloud`/`forest30`, deliberately NOT
 # `full_cloud`: the legacy COMBINED figures were parity_full_cloud.{pdf,png} and
 # calibration_full_cloud.{pdf,png}, and reusing those names for a single-cloud figure
 # would silently change what an already-included \includegraphics resolves to.  The
 # old files are left on disk untouched.
+include(joinpath(@__DIR__, "lib_parity_calibration.jl"))
+
 clouds = ((pr_f, "hypercube from $(size(Θ_full,2)) deltas", "fullcloud"),
           (pr_3, "hypercube from $(size(Θ_30,2)) deltas",   "forest30"))
-
-function parity_figure(pr, ttl, tag)
-    fig = Figure(size=(FIGW, 0.60FIGW), figure_padding=(6, 10, 4, 6))
-    Label(fig[1, 1:2], ttl; fontsize=TICK, padding=(0, 0, 0, 2))
-    for (c, (t, p, lo, hi, xl, yl, col, unit, letter)) in enumerate((
-            (pr.tE, pr.pE, pr.loE, pr.hiE, "DFT energy (eV)",
-             "ACE energy (eV)", BLU, "eV", "(a)"),
-            (pr.tF, pr.pF, pr.loF, pr.hiF, "DFT force (eV/Å)",
-             "ACE force (eV/Å)", ORN, "eV/Å", "(b)")))
-        ax = Axis(fig[2, c]; xlabel=xl, ylabel=yl,
-                  title="RMSE $(round(rmse(p, t), sigdigits=3)) $unit  |  cov $(round(cover(t, lo, hi), digits=1))%",
-                  titlesize=TITLE-1, xlabelsize=LAB, ylabelsize=LAB,
-                  xticklabelsize=TICK, yticklabelsize=TICK, xgridvisible=false,
-                  ygridvisible=false, xtickalign=1, ytickalign=1, aspect=1)
-        parity!(ax, t, p, lo, hi, col)
-        text!(ax, 0.03, 0.97; text=letter, space=:relative, align=(:left, :top),
-              font=:bold, fontsize=TITLE)
-    end
-    colgap!(fig.layout, 20); rowgap!(fig.layout, 1, 2)   # label sits close to the panels
-    save("$outdir/parity_$(tag).pdf", fig)
-    save("$outdir/parity_$(tag).png", fig; px_per_unit=4)
-    @printf("parity  [%-10s] → %s/parity_%s.{pdf,png}\n", tag, outdir, tag)
-end
 for (pr, ttl, tag) in clouds
-    parity_figure(pr, ttl, tag)
-end
-flush(stdout)
-
-# calibration: test-error distribution vs the ensemble's own predictive spread
-function calib!(ax, t, p, spread)
-    err = t .- p; mae = mean(abs.(err)); ne = err ./ mae; sp = spread ./ mae
-    lim = maximum(abs.(vcat(ne, sp))); ed = range(-lim, lim; length=61)
-    d1 = (h = fit(Histogram, ne, ed).weights; max.(h ./ (sum(h)*step(ed)), 1e-3))
-    d2 = (h = fit(Histogram, sp, ed).weights; max.(h ./ (sum(h)*step(ed)), 1e-3))
-    l1 = stairs!(ax, ed[1:end-1], d1; step=:post, color=:black, linewidth=1.8)
-    l2 = stairs!(ax, ed[1:end-1], d2; step=:post, color=RGBf(0.902,0.624,0.0), linewidth=1.8)
-    ylims!(ax, 1e-3, maximum(vcat(d1, d2))*3)
-    return l1, l2
-end
-
-function calibration_figure(pr, ttl, tag)
-    fig = Figure(size=(FIGW, 0.58FIGW), figure_padding=(6, 10, 4, 6))
-    Label(fig[1, 1:2], ttl; fontsize=TICK, padding=(0, 0, 0, 2))
-    # LineElement rather than plot handles: assignments inside the loop below do not
-    # escape its scope, which is what broke the first version of the legacy figure.
-    Legend(fig[2, 1:2],
-           [LineElement(color=:black, linewidth=2),
-            LineElement(color=RGBf(0.902,0.624,0.0), linewidth=2)],
-           ["test error (truth − model)", "ensemble spread (member − model)"];
-           orientation=:horizontal, tellwidth=false, framevisible=true,
-           labelsize=TICK, padding=(4,4,2,2))
-    for (c, (dev, tt, pp, lo, hi, nm, letter)) in enumerate((
-            (pr.dE, pr.tE, pr.pE, pr.loE, pr.hiE, "energy", "(a)"),
-            (pr.dF, pr.tF, pr.pF, pr.loF, pr.hiF, "force",  "(b)")))
-        ax = Axis(fig[3, c]; xlabel="deviation from point model / MAE",
-                  ylabel = c == 1 ? "density" : "", yscale=log10,
-                  title="$nm — coverage $(round(cover(tt, lo, hi), digits=1))%",
-                  titlesize=TITLE-1, xlabelsize=LAB, ylabelsize=LAB,
-                  xticklabelsize=TICK, yticklabelsize=TICK, xgridvisible=false,
-                  ygridvisible=false, xtickalign=1, ytickalign=1)
-        calib!(ax, tt, pp, dev)
-        text!(ax, 0.03, 0.97; text=letter, space=:relative, align=(:left, :top),
-              font=:bold, fontsize=TITLE)
-    end
-    colgap!(fig.layout, 20)
-    rowgap!(fig.layout, 1, 2); rowgap!(fig.layout, 2, 6)   # label → legend → panels
-    save("$outdir/calibration_$(tag).pdf", fig)
-    save("$outdir/calibration_$(tag).png", fig; px_per_unit=4)
-    @printf("calib   [%-10s] → %s/calibration_%s.{pdf,png}\n", tag, outdir, tag)
-end
-for (pr, ttl, tag) in clouds
-    calibration_figure(pr, ttl, tag)
+    parity_figure(pr, ttl, tag, outdir; FIGW=FIGW)
+    calibration_figure(pr, ttl, tag, outdir; FIGW=FIGW)
 end
 flush(stdout)
 
