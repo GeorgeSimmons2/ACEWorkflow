@@ -198,8 +198,10 @@ writedlm("$outdir/committee_rejection_full_cloud.csv", reduce(hcat, mem_full)', 
 TEST   = joinpath(@__DIR__, "..", "..", "data", "Al", "manual_df_test_Al.xyz")
 stride = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 20
 @printf("\n── test-set predictions (stride %d) ──\n", stride); flush(stdout)
-pr_f = committee_predictions(model, mem_full, TEST; stride=stride, point_params=θ_mean)
-pr_3 = committee_predictions(model, mem_30,   TEST; stride=stride, point_params=θ_mean)
+pr_f = committee_predictions(model, mem_full, TEST; stride=stride, point_params=θ_mean,
+                             per_atom=true)
+pr_3 = committee_predictions(model, mem_30,   TEST; stride=stride, point_params=θ_mean,
+                             per_atom=true)
 @printf("  %d test configurations\n", pr_f.n); flush(stdout)
 
 cover(t, lo, hi) = 100*(1 - mean((t .< lo) .| (t .> hi)))
@@ -244,7 +246,7 @@ for (nm, pr) in (("full cloud", pr_f), ("forest (30)", pr_3))
 end
 
 open("$outdir/hypercube_summary.csv", "w") do io
-    println(io, "cloud,n_members,n_directions,width_mean,width_max,acceptance_pct,E_coverage_pct,F_coverage_pct,E_rmse_eV,F_rmse_eV_per_A")
+    println(io, "cloud,n_members,n_directions,width_mean,width_max,acceptance_pct,E_coverage_pct,F_coverage_pct,E_rmse_eV_per_atom,F_rmse_eV_per_A")
     for (nm, Θ, he, hb, ac, pr) in (("full_cloud", Θ_full, heig_f, hb_f, acc_f, pr_f),
                                     ("forest_30",  Θ_30,   heig_3, hb_3, acc_3, pr_3))
         @printf(io, "%s,%d,%d,%.6g,%.6g,%.4f,%.3f,%.3f,%.6g,%.6g\n", nm, size(Θ,2), size(he,2),

@@ -24,6 +24,21 @@ PC_ORN = RGBf(0.835, 0.369, 0.0)
 PC_AMB = RGBf(0.902, 0.624, 0.0)
 PC_TITLE, PC_LAB, PC_TICK = 13, 12, 11
 
+# Older cached `pr` NamedTuples (and any caller that did not ask for it) have no
+# per_atom field; those were total-energy runs.
+pc_per_atom(pr) = hasproperty(pr, :per_atom) ? pr.per_atom : false
+
+"RMSE with its unit, in meV/atom for per-atom energies where the eV number is unreadable"
+function pc_rmse_label(pr, which::Symbol)
+    if which === :F
+        return "$(round(pc_rmse(pr.pF, pr.tF), sigdigits=3)) eV/Å"
+    elseif pc_per_atom(pr)
+        return "$(round(1000*pc_rmse(pr.pE, pr.tE), sigdigits=3)) meV/atom"
+    else
+        return "$(round(pc_rmse(pr.pE, pr.tE), sigdigits=3)) eV"
+    end
+end
+
 pc_cover(t, lo, hi) = 100*(1 - mean((t .< lo) .| (t .> hi)))
 pc_rmse(p, t)       = sqrt(mean((p .- t).^2))
 
@@ -54,15 +69,17 @@ DFT vs ACE with committee error bars: (a) energy, (b) force.  `pr` is a
 committee_predictions result.  Writes `\$outdir/parity_\$(tag).{pdf,png}`.
 """
 function parity_figure(pr, ttl, tag, outdir; FIGW=540.0)
+    pa = pc_per_atom(pr)
+    eax = pa ? "energy (eV/atom)" : "energy (eV)"
     fig = Figure(size=(FIGW, 0.60FIGW), figure_padding=(6, 10, 4, 6))
     Label(fig[1, 1:2], ttl; fontsize=PC_TICK, padding=(0, 0, 0, 2))
-    for (c, (t, p, lo, hi, xl, yl, col, unit, letter)) in enumerate((
-            (pr.tE, pr.pE, pr.loE, pr.hiE, "DFT energy (eV)",
-             "ACE energy (eV)", PC_BLU, "eV", "(a)"),
+    for (c, (t, p, lo, hi, xl, yl, col, rms, letter)) in enumerate((
+            (pr.tE, pr.pE, pr.loE, pr.hiE, "DFT $eax",
+             "ACE $eax", PC_BLU, pc_rmse_label(pr, :E), "(a)"),
             (pr.tF, pr.pF, pr.loF, pr.hiF, "DFT force (eV/Å)",
-             "ACE force (eV/Å)", PC_ORN, "eV/Å", "(b)")))
+             "ACE force (eV/Å)", PC_ORN, pc_rmse_label(pr, :F), "(b)")))
         ax = Axis(fig[2, c]; xlabel=xl, ylabel=yl,
-                  title="RMSE $(round(pc_rmse(p, t), sigdigits=3)) $unit  |  cov $(round(pc_cover(t, lo, hi), digits=1))%",
+                  title="RMSE $rms  |  cov $(round(pc_cover(t, lo, hi), digits=1))%",
                   titlesize=PC_TITLE-1, xlabelsize=PC_LAB, ylabelsize=PC_LAB,
                   xticklabelsize=PC_TICK, yticklabelsize=PC_TICK, xgridvisible=false,
                   ygridvisible=false, xtickalign=1, ytickalign=1, aspect=1)
@@ -117,10 +134,11 @@ end
 
 "one CSV row per committee: RMSE, coverage and bias for energy and force"
 function parity_calibration_row(io, tag, pr)
-    @printf(io, "%s,%d,%.6g,%.6g,%.4f,%.4f,%.6g,%.6g\n", tag, pr.n,
+    @printf(io, "%s,%d,%s,%.6g,%.6g,%.4f,%.4f,%.6g,%.6g\n", tag, pr.n,
+            pc_per_atom(pr) ? "eV_per_atom" : "eV_total",
             pc_rmse(pr.pE, pr.tE), pc_rmse(pr.pF, pr.tF),
             pc_cover(pr.tE, pr.loE, pr.hiE), pc_cover(pr.tF, pr.loF, pr.hiF),
             mean(pr.pE .- pr.tE), mean(pr.pF .- pr.tF))
 end
 parity_calibration_header(io) =
-    println(io, "committee,n_configs,E_rmse_eV,F_rmse_eV_per_A,E_coverage_pct,F_coverage_pct,E_bias_eV,F_bias_eV_per_A")
+    println(io, "committee,n_configs,energy_units,E_rmse,F_rmse_eV_per_A,E_coverage_pct,F_coverage_pct,E_bias,F_bias_eV_per_A")

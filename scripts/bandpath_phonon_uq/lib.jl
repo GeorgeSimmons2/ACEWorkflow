@@ -172,7 +172,14 @@ function plot_committee_bands(members, θ_mean, bp, title, path;
 end
 
 # ── Test-set committee predictions (energy + forces with min/max bounds) ─────
-function committee_predictions(model, committee, test_xyz; stride=10, point_params=mean(committee))
+# per_atom=true divides energies (prediction, committee envelope, DFT reference and the
+# member-minus-point deviations) by the atom count, giving eV/atom.  Forces are already
+# intensive and are never rescaled.  Default false so existing callers are unchanged --
+# with a test set spanning 2 to 25 atoms per configuration a TOTAL-energy RMSE is
+# dominated by the largest cells and is not comparable to the meV/atom the MLIP
+# literature reports, so new work should pass per_atom=true.
+function committee_predictions(model, committee, test_xyz; stride=10, point_params=mean(committee),
+                               per_atom::Bool=false)
     ACEpotentials.Models.set_committee!(model, committee)
     ACEpotentials.Models.set_linear_parameters!(model, point_params)   # point prediction = LSQ / central model
     tc = ExtXYZ.load(test_xyz)[1:stride:end]
@@ -180,9 +187,10 @@ function committee_predictions(model, committee, test_xyz; stride=10, point_para
     pF=Float64[];tF=Float64[];loF=Float64[];hiF=Float64[]
     dE=Float64[];dF=Float64[]                                # (ensemble member − point model), pooled over members×configs
     for cfg in tc
+        nat = per_atom ? length(cfg) : 1
         E, co = @committee potential_energy(cfg, model)
-        coe = ustrip.(co); pe = ustrip(E)
-        push!(pE, pe); push!(loE, minimum(coe)); push!(hiE, maximum(coe)); push!(tE, ustrip(cfg[:dft_energy]))
+        coe = ustrip.(co) ./ nat; pe = ustrip(E) / nat
+        push!(pE, pe); push!(loE, minimum(coe)); push!(hiE, maximum(coe)); push!(tE, ustrip(cfg[:dft_energy]) / nat)
         append!(dE, coe .- pe)                               # each member − point model
         if haskey(cfg[1], :dft_forces)
             F, coF = @committee forces(cfg, model)
@@ -194,7 +202,7 @@ function committee_predictions(model, committee, test_xyz; stride=10, point_para
             end
         end
     end
-    return (; pE, tE, loE, hiE, pF, tF, loF, hiF, dE, dF, n=length(tc))
+    return (; pE, tE, loE, hiE, pF, tF, loF, hiF, dE, dF, n=length(tc), per_atom)
 end
 
 # parity plot with committee error bars (publication styling; PDF + hi-DPI PNG)

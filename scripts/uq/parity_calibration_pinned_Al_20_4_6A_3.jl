@@ -87,7 +87,7 @@ flush(stdout)
 preds = Pair{String,Any}[]
 for (tag, ttl, mem) in committees
     t = @elapsed pr = committee_predictions(model, mem, TEST; stride=stride,
-                                            point_params=lin_params)
+                                            point_params=lin_params, per_atom=true)
     @printf("  %-9s %d configs, %d force components  [%.1f s]\n",
             tag, pr.n, length(pr.tF), t)
     push!(preds, tag => (ttl=ttl, pr=pr))
@@ -107,10 +107,10 @@ open("$outdir/parity_calibration_summary.csv", "w") do io
     for (tag, e) in preds; parity_calibration_row(io, tag, e.pr); end
 end
 println("\n══ SUMMARY ═══════════════════════════════════════════════════════")
-@printf("%-10s %12s %14s %10s %10s\n", "committee", "E RMSE eV", "F RMSE eV/Å", "E cov %", "F cov %")
+@printf("%-10s %14s %14s %10s %10s\n", "committee", "E RMSE meV/at", "F RMSE eV/Å", "E cov %", "F cov %")
 for (tag, e) in preds
-    @printf("%-10s %12.4g %14.4g %10.1f %10.1f\n", tag,
-            pc_rmse(e.pr.pE, e.pr.tE), pc_rmse(e.pr.pF, e.pr.tF),
+    @printf("%-10s %14.4g %14.4g %10.1f %10.1f\n", tag,
+            1000*pc_rmse(e.pr.pE, e.pr.tE), pc_rmse(e.pr.pF, e.pr.tF),
             pc_cover(e.pr.tE, e.pr.loE, e.pr.hiE), pc_cover(e.pr.tF, e.pr.loF, e.pr.hiF))
 end
 let n = preds[1].second.pr, r = preds[2].second.pr
