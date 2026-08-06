@@ -55,6 +55,7 @@ is 5.2 GB and drives a ~15–20 GB memory peak; `models/Al_12_4_6A_2_/A.csv` is 
 | `naive_vs_constrained_bands` | `scripts/uq/naive_vs_constrained_fullcloud_Al_12_4_6A_2.jl` | Unconstrained vs constrained POPS committee bands on one shared frequency axis — **run `fullcloud_bands_parity_calibration` first**, this reuses its committee |
 | `fcc_compare_300K` | `scripts/uq/fcc_compare_figure_Al_12_4_6A_2.jl` | FCC stability under NPT at 300 K — dispersions overlaid, unconstrained RDF above the constrained one. **Multi-volume line**, not the full-cloud one |
 | `al20_parity_calibration` | `scripts/uq/parity_calibration_pinned_Al_20_4_6A_3.jl` | Parity and calibration for the two Al_20 pinned committees — **run `pinned_rejection_phonons` first** |
+| `thermal_expansion_aT` | `scripts/uq/replot_thermal_expansion_aT_Al_12_4_6A_2.jl` | a(T) under NPT for the constrained and unconstrained members, FCC survival marked. Replot only — reads the archived summary CSVs, runs no MD |
 
 Two constraint studies run in parallel through this repository and should not be
 conflated in captions:
@@ -70,6 +71,15 @@ conflated in captions:
 Shared plotting code lives in `scripts/uq/lib_parity_calibration.jl` (parity and
 calibration, used by both the Al_12 and Al_20 entries) and
 `scripts/bandpath_phonon_uq/lib.jl` (band paths, committee predictions).
+
+### One known reproducibility gap
+
+`thermal_expansion_aT` reads two archived `thermal_expansion_summary.csv` files. Neither
+NPT driver in the current tree writes to the directory its summary lives in — the output
+paths were changed after those runs. The **figures** are fully reproducible from the
+CSVs; regenerating the **CSVs** would need the earlier driver settings, which are not
+recorded here. Both files are under 1 KB, so ship them in the data archive. Everything
+else in this directory regenerates from the external roots via the listed producers.
 
 ### Dependency chain
 

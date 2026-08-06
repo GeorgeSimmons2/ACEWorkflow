@@ -289,6 +289,53 @@ const FIGURES = [
    """,
 ),
 
+(
+ id      = "thermal_expansion_aT",
+ title   = "Lattice constant a(T) under NPT for the constrained (multi-volume) member "*
+           "and the unconstrained worst member, with FCC survival marked",
+ script  = "scripts/uq/replot_thermal_expansion_aT_Al_12_4_6A_2.jl",
+ cmd     = "julia --project scripts/uq/replot_thermal_expansion_aT_Al_12_4_6A_2.jl",
+ env     = ["FIGW" => "540  # display width in pt; use 260 if the two go side by side"],
+ outputs = ["models/Al_12_4_6A_2_/results/npt_multivolume_softest/thermal_expansion_aT.pdf",
+            "models/Al_12_4_6A_2_/results/npt_multivolume_softest/thermal_expansion_aT.png",
+            "models/Al_12_4_6A_2_/results/npt_thermal_expansion_naive_worst_member/thermal_expansion_aT.pdf",
+            "models/Al_12_4_6A_2_/results/npt_thermal_expansion_naive_worst_member/thermal_expansion_aT.png"],
+ inputs  = [
+   ("models/Al_12_4_6A_2_/results/npt_multivolume_softest/thermal_expansion_summary.csv",
+    "scripts/uq/npt_multivolume_member_Al_12_4_6A_2.jl",
+    "ARCHIVED NPT result — see notes, the driver's output directory has since changed"),
+   ("models/Al_12_4_6A_2_/results/npt_thermal_expansion_naive_worst_member/thermal_expansion_summary.csv",
+    "scripts/uq/npt_thermal_expansion_worst_member_Al_12_4_6A_2.jl",
+    "ARCHIVED NPT result — see notes"),
+ ],
+ notes   = """
+   REPLOT ONLY.  No molecular dynamics is repeated: the script reads the two
+   thermal_expansion_summary.csv files the NPT runs already wrote and rewrites
+   thermal_expansion_aT.{pdf,png} in place, so the curves are the published numbers.
+   Filenames are unchanged, so existing \\includegraphics keep resolving.
+
+   REPRODUCIBILITY GAP, stated rather than papered over.  Neither NPT driver in the
+   current tree writes to the directory its summary lives in — npt_multivolume_member
+   now writes to npt_multivolume_a_eq_con_then_rejection, and
+   npt_thermal_expansion_worst_member to npt_thermal_expansion_worst_member.  The two
+   summaries here are archived output of earlier configurations of those scripts.  The
+   FIGURES are fully reproducible from the CSVs; regenerating the CSVs themselves needs
+   the earlier driver settings, which are not recorded in the repository.  Ship the CSVs
+   in the data archive — they are under 1 KB each.
+
+   alpha is quoted ONLY where the producing run recorded one AND every plotted point is
+   still FCC.  The constrained run records fcc_points=3/4, so one temperature already
+   fails and is drawn as an open marker rather than smoothed over.  The unconstrained
+   worst member has min omega near -11 THz throughout and has left FCC by 300 K, so no
+   alpha is printed at all: a line through its a(T) would describe a solid-solid
+   transformation, not thermal expansion.
+
+   Columns are parsed BY NAME from the header line.  The two files do not carry the same
+   columns — only the constrained one has mean_coord / median_nn_Ang / still_fcc — so
+   positional indexing would silently mis-plot one of them.
+   """,
+),
+
 ]
 
 figure_by_id(id) = (i = findfirst(f -> f.id == id, FIGURES);
