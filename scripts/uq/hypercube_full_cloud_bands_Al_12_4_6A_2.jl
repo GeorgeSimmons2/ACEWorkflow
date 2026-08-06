@@ -16,7 +16,15 @@
 # display width with 11-13 pt fonts, so Overleaf does no rescaling and in-figure
 # text matches MLST body text. Do NOT add a width= scale factor in \includegraphics.
 #
-# Run: julia --project -t 8 scripts/uq/hypercube_full_cloud_bands_Al_12_4_6A_2.jl [n_members]
+# PARITY / CALIBRATION are one figure PER hypercube type, each with two panels
+# ((a) energy, (b) force) -- see the block below line 190. Four files:
+#   parity_fullcloud, parity_forest30, calibration_fullcloud, calibration_forest30
+# The legacy combined parity_full_cloud.* / calibration_full_cloud.* are no longer
+# written and are left on disk as-is, so old \includegraphics keep resolving.
+#
+# Run: julia --project -t 8 scripts/uq/hypercube_full_cloud_bands_Al_12_4_6A_2.jl [n_members] [stride]
+#   FIGW=260 rebuilds the parity/calibration figures for a half-width slot (fonts
+#   stay at 13/12/11 pt; that is the point of building at final size).
 
 include(joinpath(@__DIR__, "..", "bandpath_phonon_uq", "lib.jl"))
 using SparseArrays, LinearAlgebra, Serialization, Random
@@ -192,24 +200,55 @@ function parity!(ax, t, p, lo, hi, col)
     scatter!(ax, t, p; color=(col, 0.9), markersize=4)
 end
 
-fig2 = Figure(size=(540, 540), figure_padding=(6, 10, 4, 6))
-rowlab = ["hypercube from\n73k deltas", "hypercube from\n30 deltas"]
-for (r, pr) in enumerate((pr_f, pr_3))
-    axE = Axis(fig2[r, 1]; xlabel="DFT energy (eV)", ylabel="$(rowlab[r])\nACE energy (eV)",
-               title="RMSE $(round(rmse(pr.pE, pr.tE), sigdigits=3)) eV  |  cov $(round(cover(pr.tE, pr.loE, pr.hiE), digits=1))%",
-               titlesize=TITLE-1, xlabelsize=LAB, ylabelsize=LAB,
-               xticklabelsize=TICK, yticklabelsize=TICK, xgridvisible=false,
-               ygridvisible=false, xtickalign=1, ytickalign=1, aspect=1)
-    parity!(axE, pr.tE, pr.pE, pr.loE, pr.hiE, BLU)
-    axF = Axis(fig2[r, 2]; xlabel="DFT force (eV/Å)", ylabel="ACE force (eV/Å)",
-               title="RMSE $(round(rmse(pr.pF, pr.tF), sigdigits=3)) eV/Å  |  cov $(round(cover(pr.tF, pr.loF, pr.hiF), digits=1))%",
-               titlesize=TITLE-1, xlabelsize=LAB, ylabelsize=LAB,
-               xticklabelsize=TICK, yticklabelsize=TICK, xgridvisible=false,
-               ygridvisible=false, xtickalign=1, ytickalign=1, aspect=1)
-    parity!(axF, pr.tF, pr.pF, pr.loF, pr.hiF, RGBf(0.835,0.369,0.0))
+# ── SPLIT FIGURES (the only change from the legacy script) ───────────────────
+# Legacy put both clouds in ONE 2×2 parity figure (rows = cloud, cols = energy/force)
+# and one 3-row calibration figure.  Here each cloud gets its OWN figure with two
+# panels, (a) energy and (b) force, so the two hypercube types can be placed, sized
+# and captioned independently.  The cloud identity moves from a per-row ylabel to a
+# figure-level label, which also lets the ylabels go back to plain units.
+#
+# SIZING.  FIGW is the width the figure will be DISPLAYED at, in points.  Fonts stay
+# at 13/12/11 pt whatever FIGW is — that is the entire point of building at final
+# size.  The 540 pt default assumes each figure spans \linewidth on its own.  If you
+# place the two side by side at 0.5\linewidth, rebuild with FIGW=260 rather than
+# scaling in LaTeX; do NOT add a width= factor to \includegraphics either way.
+FIGW = parse(Float64, get(ENV, "FIGW", "540"))
+ORN  = RGBf(0.835, 0.369, 0.0)
+#
+# NOTE ON FILENAMES.  The tags are `fullcloud`/`forest30`, deliberately NOT
+# `full_cloud`: the legacy COMBINED figures were parity_full_cloud.{pdf,png} and
+# calibration_full_cloud.{pdf,png}, and reusing those names for a single-cloud figure
+# would silently change what an already-included \includegraphics resolves to.  The
+# old files are left on disk untouched.
+clouds = ((pr_f, "hypercube from $(size(Θ_full,2)) deltas", "fullcloud"),
+          (pr_3, "hypercube from $(size(Θ_30,2)) deltas",   "forest30"))
+
+function parity_figure(pr, ttl, tag)
+    fig = Figure(size=(FIGW, 0.60FIGW), figure_padding=(6, 10, 4, 6))
+    Label(fig[1, 1:2], ttl; fontsize=TICK, padding=(0, 0, 0, 2))
+    for (c, (t, p, lo, hi, xl, yl, col, unit, letter)) in enumerate((
+            (pr.tE, pr.pE, pr.loE, pr.hiE, "DFT energy (eV)",
+             "ACE energy (eV)", BLU, "eV", "(a)"),
+            (pr.tF, pr.pF, pr.loF, pr.hiF, "DFT force (eV/Å)",
+             "ACE force (eV/Å)", ORN, "eV/Å", "(b)")))
+        ax = Axis(fig[2, c]; xlabel=xl, ylabel=yl,
+                  title="RMSE $(round(rmse(p, t), sigdigits=3)) $unit  |  cov $(round(cover(t, lo, hi), digits=1))%",
+                  titlesize=TITLE-1, xlabelsize=LAB, ylabelsize=LAB,
+                  xticklabelsize=TICK, yticklabelsize=TICK, xgridvisible=false,
+                  ygridvisible=false, xtickalign=1, ytickalign=1, aspect=1)
+        parity!(ax, t, p, lo, hi, col)
+        text!(ax, 0.03, 0.97; text=letter, space=:relative, align=(:left, :top),
+              font=:bold, fontsize=TITLE)
+    end
+    colgap!(fig.layout, 20); rowgap!(fig.layout, 1, 2)   # label sits close to the panels
+    save("$outdir/parity_$(tag).pdf", fig)
+    save("$outdir/parity_$(tag).png", fig; px_per_unit=4)
+    @printf("parity  [%-10s] → %s/parity_%s.{pdf,png}\n", tag, outdir, tag)
 end
-save("$outdir/parity_full_cloud.pdf", fig2); save("$outdir/parity_full_cloud.png", fig2; px_per_unit=4)
-@printf("parity → %s/parity_full_cloud.{pdf,png}\n", outdir); flush(stdout)
+for (pr, ttl, tag) in clouds
+    parity_figure(pr, ttl, tag)
+end
+flush(stdout)
 
 # calibration: test-error distribution vs the ensemble's own predictive spread
 function calib!(ax, t, p, spread)
@@ -223,30 +262,49 @@ function calib!(ax, t, p, spread)
     return l1, l2
 end
 
-fig3 = Figure(size=(540, 460), figure_padding=(6, 10, 4, 6))
-for (r, pr) in enumerate((pr_f, pr_3))
-    for (c, (dev, tt, pp, lo, hi, nm)) in enumerate((
-            (pr.dE, pr.tE, pr.pE, pr.loE, pr.hiE, "energy"),
-            (pr.dF, pr.tF, pr.pF, pr.loF, pr.hiF, "force")))
-        ax = Axis(fig3[r+1, c]; xlabel="deviation from point model / MAE",
-                  ylabel = c == 1 ? "$(rowlab[r])\ndensity" : "", yscale=log10,
+function calibration_figure(pr, ttl, tag)
+    fig = Figure(size=(FIGW, 0.58FIGW), figure_padding=(6, 10, 4, 6))
+    Label(fig[1, 1:2], ttl; fontsize=TICK, padding=(0, 0, 0, 2))
+    # LineElement rather than plot handles: assignments inside the loop below do not
+    # escape its scope, which is what broke the first version of the legacy figure.
+    Legend(fig[2, 1:2],
+           [LineElement(color=:black, linewidth=2),
+            LineElement(color=RGBf(0.902,0.624,0.0), linewidth=2)],
+           ["test error (truth − model)", "ensemble spread (member − model)"];
+           orientation=:horizontal, tellwidth=false, framevisible=true,
+           labelsize=TICK, padding=(4,4,2,2))
+    for (c, (dev, tt, pp, lo, hi, nm, letter)) in enumerate((
+            (pr.dE, pr.tE, pr.pE, pr.loE, pr.hiE, "energy", "(a)"),
+            (pr.dF, pr.tF, pr.pF, pr.loF, pr.hiF, "force",  "(b)")))
+        ax = Axis(fig[3, c]; xlabel="deviation from point model / MAE",
+                  ylabel = c == 1 ? "density" : "", yscale=log10,
                   title="$nm — coverage $(round(cover(tt, lo, hi), digits=1))%",
                   titlesize=TITLE-1, xlabelsize=LAB, ylabelsize=LAB,
                   xticklabelsize=TICK, yticklabelsize=TICK, xgridvisible=false,
                   ygridvisible=false, xtickalign=1, ytickalign=1)
         calib!(ax, tt, pp, dev)
+        text!(ax, 0.03, 0.97; text=letter, space=:relative, align=(:left, :top),
+              font=:bold, fontsize=TITLE)
     end
+    colgap!(fig.layout, 20)
+    rowgap!(fig.layout, 1, 2); rowgap!(fig.layout, 2, 6)   # label → legend → panels
+    save("$outdir/calibration_$(tag).pdf", fig)
+    save("$outdir/calibration_$(tag).png", fig; px_per_unit=4)
+    @printf("calib   [%-10s] → %s/calibration_%s.{pdf,png}\n", tag, outdir, tag)
 end
-# LineElement rather than plot handles: assignments inside the loop above do not
-# escape its scope at top level, which is what broke the first version.
-Legend(fig3[1, 1:2],
-       [LineElement(color=:black, linewidth=2),
-        LineElement(color=RGBf(0.902,0.624,0.0), linewidth=2)],
-       ["test error (truth − model)", "ensemble spread (member − model)"];
-       orientation=:horizontal, tellwidth=false, framevisible=true,
-       labelsize=TICK, padding=(4,4,2,2))
-save("$outdir/calibration_full_cloud.pdf", fig3); save("$outdir/calibration_full_cloud.png", fig3; px_per_unit=4)
-@printf("calibration → %s/calibration_full_cloud.{pdf,png}\n", outdir)
+for (pr, ttl, tag) in clouds
+    calibration_figure(pr, ttl, tag)
+end
+flush(stdout)
+
+# The legacy script persisted only the summary CSV, so re-plotting meant re-running
+# the whole committee_predictions pass over the test set.  Keep the raw predictions so
+# the figures above can be rebuilt (e.g. at a different FIGW) without that.
+serialize("$outdir/parity_calibration_predictions.jls",
+          (; pr_f, pr_3, stride, n_members,
+             label_full = "hypercube from $(size(Θ_full,2)) deltas",
+             label_30   = "hypercube from $(size(Θ_30,2)) deltas"))
+println("predictions → $outdir/parity_calibration_predictions.jls")
 
 println("\n══ COVERAGE ═══════════════════════════════════════════════════")
 @printf("%-14s %10s %10s %12s %12s\n", "cloud", "E cov %", "F cov %", "E RMSE eV", "F RMSE eV/Å")
