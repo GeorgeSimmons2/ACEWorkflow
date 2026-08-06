@@ -115,6 +115,67 @@ const FIGURES = [
    """,
 ),
 
+(
+ id      = "naive_vs_constrained_bands",
+ title   = "Unconstrained POPS vs constrained POPS: committee phonon bands side by "*
+           "side on one shared frequency axis, each ensemble evaluated at the geometry "*
+           "its members actually hold",
+ script  = "scripts/uq/naive_vs_constrained_fullcloud_Al_12_4_6A_2.jl",
+ cmd     = "julia --project -t 40 scripts/uq/naive_vs_constrained_fullcloud_Al_12_4_6A_2.jl 30",
+ env     = ["FIGW"         => "540  # display width in pt; fonts stay 13/12/11",
+            "HESS_THREADS" => "     # caps concurrent native builds; default all Julia threads"],
+ outputs = ["models/Al_12_4_6A_2_/results/naive_vs_constrained/bands_naive_vs_constrained.pdf",
+            "models/Al_12_4_6A_2_/results/naive_vs_constrained/bands_naive_shared_axis.pdf",
+            "models/Al_12_4_6A_2_/results/naive_vs_constrained/bands_constrained_shared_axis.pdf",
+            "models/Al_12_4_6A_2_/results/naive_vs_constrained/min_freq_naive.csv",
+            "models/Al_12_4_6A_2_/results/naive_vs_constrained/min_freq_constrained.csv",
+            "models/Al_12_4_6A_2_/results/naive_vs_constrained/samples_naive.csv",
+            "models/Al_12_4_6A_2_/results/naive_vs_constrained/naive_vs_constrained.jls"],
+ inputs  = [
+   ("models/Al_12_4_6A_2_/Al_12_4_6A_2.json", "scripts/model_building/build_model.jl", "fitted ACE model"),
+   ("models/Al_12_4_6A_2_/A.csv",             "scripts/model_building/build_model.jl", "design matrix, ~259 MB"),
+   ("models/Al_12_4_6A_2_/Y.csv",             "scripts/model_building/build_model.jl", ""),
+   ("models/Al_12_4_6A_2_/P.csv",             "scripts/model_building/build_model.jl", "preconditioner"),
+   ("models/Al_12_4_6A_2_/W.csv",             "scripts/model_building/build_model.jl", "row weights"),
+   ("models/Al_12_4_6A_2_/lin_params.csv",    "scripts/model_building/build_model.jl", "mean-fit coefficients"),
+   ("models/Al_12_4_6A_2_/results/cutting_plane_full_cloud/committee_rejection_full_cloud.csv",
+    "scripts/uq/hypercube_full_cloud_bands_Al_12_4_6A_2.jl",
+    "the constrained committee — REUSED, not re-drawn, so panel (b) is the same ensemble as bands_fullcloud"),
+   ("models/Al_12_4_6A_2_/results/bandpath_undotted_ncell4_densek/theta_mean.csv",
+    "scripts/uq/bandpath_committee_undotted_Al_12_4_6A_2_ncell4_densek.jl",
+    "constrained mean, the blue central line of panel (b)"),
+   ("scripts/bandpath_phonon_uq/lib.jl", :repo, "included helper library"),
+ ],
+ notes   = """
+   RUN THE fullcloud_bands_parity_calibration ENTRY FIRST — this one consumes its
+   committee CSV so the constrained panel is that exact ensemble rather than a re-draw.
+
+   Two evaluators, each used where it is exact, which is the point of the figure:
+     constrained  prebuilt undotted per-basis Hessian at a_eq, 4×4×4.  b′·θ = 0 is
+                  imposed on these members, so a_eq IS their equilibrium and one build
+                  serves the whole ensemble.
+     naive        native Hessian per member, each relaxed to its OWN lattice constant,
+                  4×4×4.  Nothing pins these; evaluating them at a_eq would fold
+                  residual stress into the phonons and make a soft mode unattributable
+                  between bad parameters and wrong volume.
+   Where both routes are valid they agree to ~1e-14 THz, so this is not a method
+   confound.  The script prints a PIN CHECK (max |Δa| over the constrained members)
+   that gates the first choice — if it is not ~0 the prebuilt operator is being used at
+   the wrong geometry and the constrained panel is wrong.
+
+   Do NOT substitute results/bands_individual_hessian/bands_naive_individual_hessian.pdf
+   for panel (a): that figure is 10 members on a 3×3×3 cell (half-box 6.03 Å against a
+   6 Å cutoff, so periodic images contaminate it) with a uniform q-path and its own
+   y-limits.  Against bands_fullcloud it differs in four ways at once and the y-limits
+   cannot be matched by cropping.
+
+   ~31 native force-constant builds on a 256-atom cell, chunked over tasks with one
+   deep-copied model each (native evaluation mutates the model, so a shared one is a
+   data race).  Seeded; no OSQP in the naive path, so the naive committee is exactly
+   reproducible.  The constrained committee is whatever the fullcloud run produced.
+   """,
+),
+
 ]
 
 figure_by_id(id) = (i = findfirst(f -> f.id == id, FIGURES);

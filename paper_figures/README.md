@@ -52,6 +52,7 @@ is 5.2 GB and drives a ~15–20 GB memory peak; `models/Al_12_4_6A_2_/A.csv` is 
 |---|---|---|
 | `fullcloud_bands_parity_calibration` | `scripts/uq/hypercube_full_cloud_bands_Al_12_4_6A_2.jl` | Constrained POPS scaled to the full leverage cloud — committee phonon bands, plus test-set parity and calibration for both hypercube types |
 | `pinned_rejection_phonons` | `scripts/uq/pinned_hypercube_rejection_Al_20_4_6A_3.jl` | a_eq-pinned committee, no-rejection vs rejection sampling, side by side on the undotted 4×4×4 band path |
+| `naive_vs_constrained_bands` | `scripts/uq/naive_vs_constrained_fullcloud_Al_12_4_6A_2.jl` | Unconstrained vs constrained POPS committee bands on one shared frequency axis — **run `fullcloud_bands_parity_calibration` first**, this reuses its committee |
 
 ### Dependency chain
 
@@ -70,8 +71,17 @@ cutting_plane_full_cloud_Al_12_4_6A_2.jl
    │
    ▼
 hypercube_full_cloud_bands_Al_12_4_6A_2.jl  + data/Al/manual_df_test_Al.xyz
-   └─► bands, parity ×2, calibration ×2
+   └─► bands ×2, parity ×2, calibration ×2
+   │   └─► committee_rejection_full_cloud.csv
+   ▼
+naive_vs_constrained_fullcloud_Al_12_4_6A_2.jl
+   └─► naive vs constrained bands, shared frequency axis
 ```
+
+Ordering matters in one place only: `naive_vs_constrained_bands` consumes
+`committee_rejection_full_cloud.csv`, so `fullcloud_bands_parity_calibration` has to run
+first. `make_figures.jl` runs entries in manifest order, which respects this; it also
+skips rather than half-fails if the CSV is absent.
 
 ## Reproducibility caveats
 
