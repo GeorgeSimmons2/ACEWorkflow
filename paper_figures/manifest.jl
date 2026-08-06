@@ -292,10 +292,10 @@ const FIGURES = [
 (
  id      = "thermal_expansion_aT",
  title   = "Lattice constant a(T) under NPT for the constrained (multi-volume) member "*
-           "and the unconstrained worst member, with FCC survival marked",
+           "and the unconstrained worst member — scatter with a linear fit, α quoted",
  script  = "scripts/uq/replot_thermal_expansion_aT_Al_12_4_6A_2.jl",
  cmd     = "julia --project scripts/uq/replot_thermal_expansion_aT_Al_12_4_6A_2.jl",
- env     = ["FIGW" => "540  # display width in pt; use 260 if the two go side by side"],
+ env     = ["FIGW" => "260  # half of \\linewidth — these are built for a side-by-side pair"],
  outputs = ["models/Al_12_4_6A_2_/results/npt_multivolume_softest/thermal_expansion_aT.pdf",
             "models/Al_12_4_6A_2_/results/npt_multivolume_softest/thermal_expansion_aT.png",
             "models/Al_12_4_6A_2_/results/npt_thermal_expansion_naive_worst_member/thermal_expansion_aT.pdf",
@@ -323,12 +323,27 @@ const FIGURES = [
    the earlier driver settings, which are not recorded in the repository.  Ship the CSVs
    in the data archive — they are under 1 KB each.
 
-   alpha is quoted ONLY where the producing run recorded one AND every plotted point is
-   still FCC.  The constrained run records fcc_points=3/4, so one temperature already
-   fails and is drawn as an open marker rather than smoothed over.  The unconstrained
-   worst member has min omega near -11 THz throughout and has left FCC by 300 K, so no
-   alpha is printed at all: a line through its a(T) would describe a solid-solid
-   transformation, not thermal expansion.
+   Scatter with error bars, ONE linear least-squares fit, alpha quoted top left.  Nothing
+   else on the axes — the caveats below belong in the caption, not on the plot.
+
+   WHICH POINTS ARE FITTED.  `fit_exclude` in the script's `runs` tuple lists
+   temperatures that are PLOTTED but not FITTED.  The constrained run's 900 K point is
+   excluded: still_fcc=false with mean_coord 9.12 against 12 for FCC, so the structure
+   has transformed and fitting it would turn alpha into a number about a solid-solid
+   transition.  The fit line is drawn only across the fitted range, so which points it
+   covers is visible without an annotation.  alpha is computed from THAT fit
+   (slope/intercept), so the quoted number always matches the line drawn; the value the
+   producing run recorded goes to stdout for comparison, not onto the figure.
+
+   FOR THE CAPTION, not the axes: the unconstrained worst member sits near -11 THz
+   throughout and has left FCC by 300 K, so its alpha describes a transformed structure
+   rather than thermal expansion of an FCC crystal.  Its summary carries no still_fcc
+   column, so nothing in the data flags this — it has to be said in the text.
+
+   SIZING.  Built at FIGW = 260 pt, half of \\linewidth, because the two are meant to sit
+   side by side; the panel is near-square.  Place them at NATURAL SIZE in a
+   0.5\\linewidth minipage or subfigure — passing width= to \\includegraphics reintroduces
+   exactly the scaling this avoids.  FIGW=540 for a single full-width plot.
 
    Columns are parsed BY NAME from the header line.  The two files do not carry the same
    columns — only the constrained one has mean_coord / median_nn_Ang / still_fcc — so
