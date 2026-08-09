@@ -56,7 +56,8 @@ is 5.2 GB and drives a ~15–20 GB memory peak; `models/Al_12_4_6A_2_/A.csv` is 
 | `fcc_compare_300K` | `scripts/uq/fcc_compare_figure_Al_12_4_6A_2.jl` | FCC stability under NPT at 300 K — dispersions overlaid, unconstrained RDF above the constrained one. **Multi-volume line**, not the full-cloud one |
 | `al20_parity_calibration` | `scripts/uq/parity_calibration_pinned_Al_20_4_6A_3.jl` | Parity and calibration for the two Al_20 pinned committees — **run `pinned_rejection_phonons` first** |
 | `thermal_expansion_aT` | `scripts/uq/replot_thermal_expansion_aT_Al_12_4_6A_2.jl` | a(T) under NPT for the constrained and unconstrained members — scatter, linear fit, α quoted. Built at 260 pt for a side-by-side pair. Replot only, runs no MD |
-| `surface_energy` | `scripts/qoi/surface_energy_vacuum.jl` | Al(001) surface energy across both committees, full relaxation per member. **The validated QoI** |
+| `surface_energy_001` | `scripts/qoi/surface_energy_vacuum.jl` | Al(001) surface energy across both committees, full relaxation per member. **The validated QoI** |
+| `surface_energy_111` | `scripts/qoi/surface_energy_vacuum.jl` | Al(111), the close-packed face — same script, `SURFACE=111`. Must come out **below** (001) |
 | `vacancy_formation` | `scripts/qoi/vacancy_formation.jl` | Vacancy formation energy across both committees. Spread comparison only — see the caveat below |
 
 ### The two QoIs, and which one to quote
@@ -65,11 +66,13 @@ Both propagate the committees into an observable that is **in no predicate** —
 Born rows, not the a_eq pin, not the phonon cut — so any tightening is the prior reaching
 something it never constrained.
 
-- **`surface_energy` is the one to quote.** The central models give +0.861 and
+- **`surface_energy_001` / `surface_energy_111` are the ones to quote.** The central models give +0.861 and
   +0.946 J/m² against ~0.9–1.0 for Al(001) in DFT, and relaxation lowers γ by ~0.02 J/m²
   as it must. The headline is not the variance ratio (0.60) but that **15/30 unconstrained
   members predict a negative surface energy** — a crystal that spontaneously cleaves —
   against 3/30 constrained, with the constrained mean landing on the DFT value.
+  (111) is the same calculation on the close-packed face and is the stronger internal
+  check: it must come out below (001), or the oriented cell is wrong.
 - **`vacancy_formation` is a spread comparison only.** The model gives E_f < 0, already
   negative before any relaxation. This is conditioning, not a broken model: E_f multiplies
   the per-atom cohesive energy by N−1 = 255, so a 4.7 meV/atom error flips its sign.

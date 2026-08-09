@@ -352,19 +352,20 @@ const FIGURES = [
 ),
 
 (
- id      = "surface_energy",
+ id      = "surface_energy_001",
  title   = "Surface energy of Al(001) across the unconstrained and constrained POPS "*
            "committees, full relaxation per member",
  script  = "scripts/qoi/surface_energy_vacuum.jl",
- cmd     = "julia --project -t 40 scripts/qoi/surface_energy_vacuum.jl",
- env     = ["ELEMENT" => "Al", "N_SUPER" => "4", "VACUUM" => "12.0  # Å, must exceed the cutoff",
-            "NORMAL" => "3    # cell vector stretched → (001)",
+ cmd     = "SURFACE=001 julia --project -t 40 scripts/qoi/surface_energy_vacuum.jl",
+ env     = ["SURFACE" => "001", "ELEMENT" => "Al", "N_SUPER" => "4",
+            "VACUUM" => "12.0  # Å, must exceed the cutoff",
+            "NORMAL" => "3    # cell vector stretched",
             "QOI_THREADS" => "", "NBINS" => "10", "FIGW" => "540"],
- outputs = ["models/Al_12_4_6A_2_/results/surface_energy/surface_energy.pdf",
-            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy.png",
-            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_unconstrained.csv",
-            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_constrained.csv",
-            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy.jls"],
+ outputs = ["models/Al_12_4_6A_2_/results/surface_energy/surface_energy_001.pdf",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_001.png",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_001_unconstrained.csv",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_001_constrained.csv",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_001.jls"],
  inputs  = [
    ("models/Al_12_4_6A_2_/Al_12_4_6A_2.json", "scripts/model_building/build_model.jl", "fitted ACE model"),
    ("models/Al_12_4_6A_2_/lin_params.csv",    "scripts/model_building/build_model.jl", "central model of the unconstrained committee"),
@@ -398,6 +399,56 @@ const FIGURES = [
    surfaces interact across the gap) and the slab must exceed 2x cutoff (else through the
    material).  At N_SUPER=4 the slab is 16.2 A against 12 A and both pass; the script
    warns rather than leaving it to the reader.
+
+   FILENAMES now carry the surface, so 001 and 111 coexist in one directory.  The very
+   first run predates that and left unsuffixed surface_energy.* files; those are the same
+   001 numbers under the old names and can be deleted once 001 is re-run.
+   """,
+),
+
+(
+ id      = "surface_energy_111",
+ title   = "Surface energy of Al(111), the close-packed face, across both committees",
+ script  = "scripts/qoi/surface_energy_vacuum.jl",
+ cmd     = "SURFACE=111 julia --project -t 40 scripts/qoi/surface_energy_vacuum.jl",
+ env     = ["SURFACE" => "111", "ELEMENT" => "Al", "N_SUPER" => "4",
+            "VACUUM" => "12.0", "NORMAL" => "3", "QOI_THREADS" => "",
+            "NBINS" => "10", "FIGW" => "540"],
+ outputs = ["models/Al_12_4_6A_2_/results/surface_energy/surface_energy_111.pdf",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_111.png",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_111_unconstrained.csv",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_111_constrained.csv",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_111.jls"],
+ inputs  = [
+   ("models/Al_12_4_6A_2_/Al_12_4_6A_2.json", "scripts/model_building/build_model.jl", "fitted ACE model"),
+   ("models/Al_12_4_6A_2_/lin_params.csv",    "scripts/model_building/build_model.jl", "central model of the unconstrained committee"),
+   ("models/Al_12_4_6A_2_/results/bandpath_undotted_ncell4_densek/theta_mean.csv",
+    "scripts/uq/bandpath_committee_undotted_Al_12_4_6A_2_ncell4_densek.jl",
+    "central model of the constrained committee"),
+   ("models/Al_12_4_6A_2_/results/naive_vs_constrained/samples_naive.csv",
+    "scripts/uq/naive_vs_constrained_fullcloud_Al_12_4_6A_2.jl", "unconstrained committee"),
+   ("models/Al_12_4_6A_2_/results/cutting_plane_full_cloud/committee_rejection_full_cloud.csv",
+    "scripts/uq/hypercube_full_cloud_bands_Al_12_4_6A_2.jl", "constrained committee"),
+ ],
+ notes   = """
+   Same script and same method as surface_energy_001; only the oriented cell differs.
+   (111) needs a cell whose third vector lies along [111], which for a cubic lattice IS
+   the (111) normal, so stretching it opens the gap in the right direction:
+
+       a1 = a/2 [1,-1, 0]     a2 = a/2 [0, 1,-1]     a3 = a [1, 1, 1]
+
+   det = 3a³/4 against a primitive volume of a³/4, so the cell holds exactly 3 atoms —
+   the ABC stacking.  The three basis positions are NOT hard-coded (easy to get subtly
+   wrong in a way that silently changes the stacking); the FCC lattice points inside the
+   cell are enumerated and the count is asserted to be 3.  Face area is |a1 x a2| =
+   sqrt(3)a²/4, the standard (111) area per surface atom.
+
+   THE CHECK THAT MATTERS: (111) is close-packed, so gamma must come out BELOW (001) —
+   about 0.7 J/m² against 0.86/0.95.  If it comes out higher the cell construction is
+   wrong, not the model.  Note the atom-count assertion catches a wrong COUNT, not a
+   wrong stacking, so this comparison is the real test.
+
+   At N_SUPER=4 the slab is 4 x 7.01 = 28 A, comfortably past the 2 x cutoff check.
    """,
 ),
 

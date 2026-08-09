@@ -43,7 +43,7 @@
 # histogram as garbage.
 #
 # Run:  julia --project -t <ncores> scripts/qoi/surface_energy_vacuum.jl [unconstrained.csv constrained.csv]
-#   ELEMENT=Al  N_SUPER=4  VACUUM=12.0  NORMAL=3  QOI_THREADS=<n>
+#   ELEMENT=Al  SURFACE=001|111  N_SUPER=4  VACUUM=12.0  NORMAL=3  QOI_THREADS=<n>
 #   MODELDIR=models/Al_12_4_6A_2_  FIGW=540
 
 using ACEWorkflow, ACEpotentials, AtomsBase, AtomsBuilder, GeometryOptimization
@@ -56,6 +56,8 @@ element     = Symbol(get(ENV, "ELEMENT", "Al"))
 N_SUPER     = parse(Int,     get(ENV, "N_SUPER", "4"))
 VACUUM      = parse(Float64, get(ENV, "VACUUM",  "12.0"))   # Å added along the normal
 NORMAL      = parse(Int,     get(ENV, "NORMAL",  "3"))      # which cell vector to stretch
+SURFACE     = get(ENV, "SURFACE", "001")                    # "001" or "111"
+SURFACE in ("001", "111") || error("SURFACE must be \"001\" or \"111\", got $SURFACE")
 QOI_THREADS = parse(Int,     get(ENV, "QOI_THREADS", string(Threads.nthreads())))
 FIGW        = parse(Float64, get(ENV, "FIGW", "540"))
 MODELDIR    = get(ENV, "MODELDIR", "models/Al_12_4_6A_2_")
@@ -102,6 +104,38 @@ for e in ensembles
 end
 flush(stdout)
 
+# ── oriented unit cell ──────────────────────────────────────────────────────
+# (001) is the conventional cubic cell, whose third vector is already the surface
+# normal.  (111) needs a cell whose third vector lies along [111] — for a cubic lattice
+# that direction IS the (111) normal, so `add_vacuum` then opens the right gap.
+#
+#     a1 = a/2 [1,-1, 0]      in-plane FCC lattice vectors
+#     a2 = a/2 [0, 1,-1]
+#     a3 = a   [1, 1, 1]      three (111) layers, spacing |a3|/3 = a/sqrt(3)
+#
+# det = 3a³/4 against a primitive volume of a³/4, so the cell holds exactly 3 atoms —
+# the ABC stacking.  Rather than hard-coding their positions (easy to get subtly wrong),
+# the FCC lattice points inside the cell are found by enumeration and the count is
+# asserted.  Face area |a1 x a2| = sqrt(3)a²/4, the standard (111) area per surface atom.
+function oriented_cell(a)
+    SURFACE == "001" && return nothing        # caller uses the relaxed cubic cell as-is
+    a1 = (a/2) .* [ 1.0, -1.0,  0.0]
+    a2 = (a/2) .* [ 0.0,  1.0, -1.0]
+    a3 =  a    .* [ 1.0,  1.0,  1.0]
+    C    = hcat(a1, a2, a3)
+    Cinv = inv(C)
+    f = [(a/2) .* [1.0,1.0,0.0], (a/2) .* [0.0,1.0,1.0], (a/2) .* [1.0,0.0,1.0]]
+    pts = Vector{Vector{Float64}}()
+    for i in -4:4, j in -4:4, k in -4:4
+        p = i .* f[1] .+ j .* f[2] .+ k .* f[3]
+        s = Cinv * p
+        all(x -> -1e-8 <= x < 1 - 1e-8, s) && push!(pts, p)
+    end
+    length(pts) == 3 || error("(111) cell enumeration found $(length(pts)) atoms, expected 3")
+    atoms = [AtomsBase.Atom(element, p .* u"Å") for p in pts]
+    return periodic_system(atoms, [a1, a2, a3] .* u"Å")
+end
+
 # ── stretch one cell vector, keep the atoms where they are ──────────────────
 # Single-element system, so every atom is rebuilt as `element`; positions are copied in
 # Cartesian coordinates so the slab is a genuine cleave, not a rescale of the contents.
@@ -126,8 +160,12 @@ end
 function surface_energy(m, θ)
     ACEpotentials.Models.set_linear_parameters!(m, θ)
 
-    bopt   = minimize_energy!(bulk(element; cubic=true), m; variablecell=true).system
-    bulk_s = deepcopy(bopt) * (N_SUPER, N_SUPER, N_SUPER)
+    # relax the cubic cell to fix the lattice constant, then orient.  The (001) path is
+    # unchanged: it uses that relaxed cubic cell directly.
+    bopt = minimize_energy!(bulk(element; cubic=true), m; variablecell=true).system
+    a_rel = norm(ustrip.(collect(AtomsBase.cell(bopt).cell_vectors)[1]))
+    cell1 = SURFACE == "001" ? bopt : oriented_cell(a_rel)
+    bulk_s = deepcopy(cell1) * (N_SUPER, N_SUPER, N_SUPER)
     E_bulk = ustrip(u"eV", potential_energy(bulk_s, m))
 
     A     = face_area(bulk_s, NORMAL)                       # Å², same for slab and bulk
@@ -143,7 +181,7 @@ function surface_energy(m, θ)
 
     conv(r) = hasproperty(r, :converged) ? r.converged : missing
     return (; γ, γ_un, A, thick, E_bulk, n_atoms = length(bulk_s),
-              a = norm(ustrip.(collect(AtomsBase.cell(bopt).cell_vectors)[1])),
+              a = a_rel,
               conv_slab = conv(rs))
 end
 
@@ -191,7 +229,9 @@ for (k, θc) in centres
     r.thick > 2rcut || @warn "slab thickness $(round(r.thick;digits=2)) Å ≤ 2×cutoff — the two surfaces interact THROUGH THE SLAB; raise N_SUPER"
     r.γ > 0 || @warn "γ ≤ 0 for $k — a surface that lowers the energy is unphysical"
 end
-println("  reference: Al(001) ≈ 0.9–1.0 J/m² in DFT, (111) ≈ 0.7")
+@printf("  reference for Al(%s): %s J/m² in DFT\n", SURFACE,
+        SURFACE == "001" ? "0.9-1.0" : "~0.7")
+SURFACE == "111" && println("  (111) is the close-packed face and should come out BELOW (001)")
 flush(stdout)
 
 # ── committees ──────────────────────────────────────────────────────────────
@@ -213,7 +253,7 @@ end
 
 # ── results ─────────────────────────────────────────────────────────────────
 J(x) = x .* EV_PER_A2_TO_J_PER_M2
-println("\n══ SURFACE ENERGY ($(element), cell vector $NORMAL stretched) ═══════════")
+println("\n══ SURFACE ENERGY  $(element)($(SURFACE))  ═══════════════════════════════")
 for e in ensembles
     @printf("%-14s central model (%s): γ = %+.3f J/m²\n",
             e.tag, e.centre, centre_res[e.centre].γ * EV_PER_A2_TO_J_PER_M2)
@@ -267,19 +307,19 @@ for (c, e) in enumerate(ensembles)
                       align=(:right,:top), fontsize=SMALL, color=:gray40)
 end
 colgap!(fig.layout, 22)
-save("$outdir/surface_energy.pdf", fig)
-save("$outdir/surface_energy.png", fig; px_per_unit=4)
+save("$outdir/surface_energy_$(SURFACE).pdf", fig)
+save("$outdir/surface_energy_$(SURFACE).png", fig; px_per_unit=4)
 
 for e in ensembles
     r = out[e.tag]
-    writedlm("$outdir/surface_energy_$(e.tag).csv",
+    writedlm("$outdir/surface_energy_$(SURFACE)_$(e.tag).csv",
              hcat(r.ok, J(r.γ), J(r.γ_un), r.A), ',')
 end
-serialize("$outdir/surface_energy.jls",
+serialize("$outdir/surface_energy_$(SURFACE).jls",
           (; out, centre_γ = Dict(k => r.γ for (k, r) in centre_res),
              centre_γ_un = Dict(k => r.γ_un for (k, r) in centre_res),
-             element, N_SUPER, VACUUM, NORMAL, rcut,
+             element, SURFACE, N_SUPER, VACUUM, NORMAL, rcut,
              sources = Dict(e.tag => e.csv for e in ensembles)))
-println("\nfigure → $outdir/surface_energy.{pdf,png}")
-println("data   → $outdir/surface_energy_{unconstrained,constrained}.csv")
+println("\nfigure → $outdir/surface_energy_$(SURFACE).{pdf,png}")
+println("data   → $outdir/surface_energy_$(SURFACE)_{unconstrained,constrained}.csv")
 println("         columns: member, γ (J/m²), γ unrelaxed (J/m²), face area (Å²)")
