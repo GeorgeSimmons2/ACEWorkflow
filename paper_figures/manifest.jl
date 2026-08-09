@@ -351,6 +351,110 @@ const FIGURES = [
    """,
 ),
 
+(
+ id      = "surface_energy",
+ title   = "Surface energy of Al(001) across the unconstrained and constrained POPS "*
+           "committees, full relaxation per member",
+ script  = "scripts/qoi/surface_energy_vacuum.jl",
+ cmd     = "julia --project -t 40 scripts/qoi/surface_energy_vacuum.jl",
+ env     = ["ELEMENT" => "Al", "N_SUPER" => "4", "VACUUM" => "12.0  # Å, must exceed the cutoff",
+            "NORMAL" => "3    # cell vector stretched → (001)",
+            "QOI_THREADS" => "", "NBINS" => "10", "FIGW" => "540"],
+ outputs = ["models/Al_12_4_6A_2_/results/surface_energy/surface_energy.pdf",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy.png",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_unconstrained.csv",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy_constrained.csv",
+            "models/Al_12_4_6A_2_/results/surface_energy/surface_energy.jls"],
+ inputs  = [
+   ("models/Al_12_4_6A_2_/Al_12_4_6A_2.json", "scripts/model_building/build_model.jl", "fitted ACE model"),
+   ("models/Al_12_4_6A_2_/lin_params.csv",    "scripts/model_building/build_model.jl", "central model of the unconstrained committee"),
+   ("models/Al_12_4_6A_2_/results/bandpath_undotted_ncell4_densek/theta_mean.csv",
+    "scripts/uq/bandpath_committee_undotted_Al_12_4_6A_2_ncell4_densek.jl",
+    "central model of the constrained committee"),
+   ("models/Al_12_4_6A_2_/results/naive_vs_constrained/samples_naive.csv",
+    "scripts/uq/naive_vs_constrained_fullcloud_Al_12_4_6A_2.jl", "unconstrained committee"),
+   ("models/Al_12_4_6A_2_/results/cutting_plane_full_cloud/committee_rejection_full_cloud.csv",
+    "scripts/uq/hypercube_full_cloud_bands_Al_12_4_6A_2.jl", "constrained committee"),
+ ],
+ notes   = """
+   gamma = (E_slab - E_bulk) / 2A, obtained by stretching one cell vector of the relaxed
+   bulk supercell by VACUUM so the periodic images separate, then relaxing positions at
+   fixed cell.  Same atoms and same count on both sides, so the reference cancels
+   exactly; the 2 is because periodicity gives two free surfaces.
+
+   THIS IS THE WELL-CONDITIONED QoI, and it validates the model.  Central models give
+   +0.861 J/m2 (lin_params) and +0.946 (theta_mean) against ~0.9-1.0 for Al(001) in DFT,
+   with relaxation lowering gamma by ~0.02 J/m2 as it must.  All 60 committee members
+   relaxed downhill.
+
+   THE RESULT WORTH QUOTING is not the variance ratio (sigma_con/sigma_uncon = 0.60) but
+   the count of unphysical members: 15/30 of the unconstrained committee predict a
+   NEGATIVE surface energy -- a crystal that spontaneously cleaves -- against 3/30
+   constrained.  The constrained mean is 1.004 J/m2, on the DFT value; the unconstrained
+   mean is -0.215.  gamma is in no predicate, so this is the prior removing members that
+   are unphysical rather than merely uncertain, in an observable it never touched.
+
+   Geometry is checked, not assumed: VACUUM must exceed the model cutoff (else the two
+   surfaces interact across the gap) and the slab must exceed 2x cutoff (else through the
+   material).  At N_SUPER=4 the slab is 16.2 A against 12 A and both pass; the script
+   warns rather than leaving it to the reader.
+   """,
+),
+
+(
+ id      = "vacancy_formation",
+ title   = "Vacancy formation energy across the unconstrained and constrained POPS "*
+           "committees, full minimisation per member",
+ script  = "scripts/qoi/vacancy_formation.jl",
+ cmd     = "julia --project -t 40 scripts/qoi/vacancy_formation.jl && " *
+           "julia --project scripts/qoi/plot_vacancy_formation.jl",
+ env     = ["ELEMENT" => "Al", "N_SUPER" => "4  # 4-atom cubic cell → 255-atom vacancy cell",
+            "QOI_THREADS" => "", "NBINS" => "10", "XCLIP" => "1", "FIGW" => "540"],
+ outputs = ["models/Al_12_4_6A_2_/results/vacancy_formation/vacancy_formation.pdf",
+            "models/Al_12_4_6A_2_/results/vacancy_formation/vacancy_formation_hist.pdf",
+            "models/Al_12_4_6A_2_/results/vacancy_formation/vacancy_formation_hist_unconstrained.pdf",
+            "models/Al_12_4_6A_2_/results/vacancy_formation/vacancy_formation_hist_constrained.pdf",
+            "models/Al_12_4_6A_2_/results/vacancy_formation/vacancy_formation_unconstrained.csv",
+            "models/Al_12_4_6A_2_/results/vacancy_formation/vacancy_formation_constrained.csv",
+            "models/Al_12_4_6A_2_/results/vacancy_formation/vacancy_formation.jls"],
+ inputs  = [
+   ("models/Al_12_4_6A_2_/Al_12_4_6A_2.json", "scripts/model_building/build_model.jl", "fitted ACE model"),
+   ("models/Al_12_4_6A_2_/lin_params.csv",    "scripts/model_building/build_model.jl", "central model of the unconstrained committee"),
+   ("models/Al_12_4_6A_2_/results/bandpath_undotted_ncell4_densek/theta_mean.csv",
+    "scripts/uq/bandpath_committee_undotted_Al_12_4_6A_2_ncell4_densek.jl",
+    "central model of the constrained committee"),
+   ("models/Al_12_4_6A_2_/results/naive_vs_constrained/samples_naive.csv",
+    "scripts/uq/naive_vs_constrained_fullcloud_Al_12_4_6A_2.jl", "unconstrained committee"),
+   ("models/Al_12_4_6A_2_/results/cutting_plane_full_cloud/committee_rejection_full_cloud.csv",
+    "scripts/uq/hypercube_full_cloud_bands_Al_12_4_6A_2.jl", "constrained committee"),
+   ("scripts/qoi/plot_vacancy_formation.jl", :repo, "histogram replotter, second half of `cmd`"),
+ ],
+ notes   = """
+   E_f = E_vac - (N-1) * E_coh, each member relaxing its OWN bulk cell (variable cell)
+   and its OWN vacancy supercell (fixed cell).  N_SUPER=4 on the 4-atom conventional cell
+   gives a 255-atom vacancy cell.
+
+   DO NOT QUOTE THE ABSOLUTE VALUE.  The model gives E_f < 0 -- around -0.87 eV against
+   ~+0.67 eV for Al -- and it is already negative BEFORE any relaxation, at ideal
+   geometry, so the minimiser is not the cause.  Two other explanations were checked and
+   rejected: the per-atom bulk energy is identical to machine precision across
+   4/32/108/256-atom cells, and referencing the same supercell instead of the 4-atom cell
+   changes nothing.
+
+   The cause is CONDITIONING, not the model being broken -- see the surface_energy entry,
+   where the same model lands on the DFT value.  E_f multiplies the per-atom cohesive
+   energy by N-1 = 255, so a 4.7 meV/atom error is enough to flip its sign, which is an
+   unremarkable error for any MLIP.  gamma has no such amplification: E_bulk enters once.
+   Quote the surface energy as the validated QoI and treat E_f as a spread comparison
+   only.
+
+   HISTORY, so old numbers are not mistaken for current ones: an earlier run had
+   `* (4,4,4)` applied to sys_bulk BEFORE the supercell step, giving a 256-atom "bulk"
+   and a 16383-atom vacancy cell.  Any result quoting sigma_con/sigma_uncon = 0.023 came
+   from that run and should not be used.
+   """,
+),
+
 ]
 
 figure_by_id(id) = (i = findfirst(f -> f.id == id, FIGURES);
