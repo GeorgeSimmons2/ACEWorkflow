@@ -506,6 +506,71 @@ const FIGURES = [
    """,
 ),
 
+(
+ id      = "gruneisen",
+ title   = "Grüneisen parameter across the unconstrained and constrained POPS "*
+           "committees, each member relaxed and its phonons rebuilt at three volumes",
+ script  = "scripts/qoi/gruneisen_committee.jl",
+ cmd     = "julia --project -t 40 scripts/qoi/gruneisen_committee.jl",
+ env     = ["ELEMENT" => "Al", "N_CELL" => "4", "NQ" => "8   # NQ³ Monkhorst-Pack grid",
+            "DELTA" => "0.01", "T_K" => "300", "OMEGA_MIN" => "0.1  # THz",
+            "QOI_THREADS" => "", "NBINS" => "10", "FIGW" => "540"],
+ outputs = ["models/Al_12_4_6A_2_/results/gruneisen/gruneisen.pdf",
+            "models/Al_12_4_6A_2_/results/gruneisen/gruneisen.png",
+            "models/Al_12_4_6A_2_/results/gruneisen/gruneisen_unconstrained.csv",
+            "models/Al_12_4_6A_2_/results/gruneisen/gruneisen_constrained.csv",
+            "models/Al_12_4_6A_2_/results/gruneisen/gruneisen.jls"],
+ inputs  = [
+   ("models/Al_12_4_6A_2_/Al_12_4_6A_2.json", "scripts/model_building/build_model.jl", "fitted ACE model"),
+   ("models/Al_12_4_6A_2_/lin_params.csv",    "scripts/model_building/build_model.jl", "central model of the unconstrained committee"),
+   ("models/Al_12_4_6A_2_/results/bandpath_undotted_ncell4_densek/theta_mean.csv",
+    "scripts/uq/bandpath_committee_undotted_Al_12_4_6A_2_ncell4_densek.jl",
+    "central model of the constrained committee"),
+   ("models/Al_12_4_6A_2_/results/naive_vs_constrained/samples_naive.csv",
+    "scripts/uq/naive_vs_constrained_fullcloud_Al_12_4_6A_2.jl", "unconstrained committee"),
+   ("models/Al_12_4_6A_2_/results/cutting_plane_full_cloud/committee_rejection_full_cloud.csv",
+    "scripts/uq/hypercube_full_cloud_bands_Al_12_4_6A_2.jl", "constrained committee"),
+   ("scripts/bandpath_phonon_uq/lib.jl", :repo, "included helper library"),
+ ],
+ notes   = """
+   gamma_qv = -dln(omega)/dln(V) by central difference at a*(1 +/- DELTA), then
+   gamma(T) = sum Cv gamma / sum Cv over a Gamma-centred NQ^3 Monkhorst-Pack grid with
+   Gamma dropped.  NOT the band-path average used by
+   scripts/phonons/gruneisen_phonon_bands_ace.jl: a path is a 1-D cut, not a
+   Brillouin-zone sample, so the Cv weighting there is over the wrong measure.  Each
+   member is relaxed first and gets three native force-constant builds about its OWN
+   equilibrium; gamma is a derivative, so a shared set of volumes would differentiate at
+   the wrong reference and under residual stress.
+
+   THE CALCULATION IS CONVERGED.  gamma(300 K) for lin_params, varying one setting at a
+   time from the production values (N_CELL 4, NQ 8, DELTA 0.01):
+       N_CELL  3 / 4 / 5   ->  4.9453 / 4.9511 / 4.9516     (0.1%)
+       NQ      4 / 8 / 12  ->  4.8762 / 4.9511 / 4.9565     (0.1%)
+       DELTA   0.005/0.01/0.02 -> 4.8492 / 4.9511 / 5.2037  (O(delta^2), as it should be)
+   Richardson extrapolation of the DELTA series gives gamma(delta -> 0) ~ 4.83.
+   Sign check: median omega runs 7.499 -> 6.541 -> 5.646 THz across 0.99a -> a -> 1.01a
+   and 0 of 1533 modes stiffen under expansion, so there is no sign error and no
+   mode-tracking pathology.
+
+   DO NOT QUOTE THE ABSOLUTE VALUE.  gamma ~ 4.8 against ~2.1-2.2 for Al: the model is
+   about 2.2x too volume-sensitive.  The frequencies themselves are fine (median 6.5 THz
+   is reasonable), so it is specifically d(omega)/dV that is wrong.  Note this only
+   reconciles with the NPT alpha of 2.63e-5 /K, which is roughly right, if B is
+   correspondingly over-stiff and cancels in alpha = gamma Cv / (3 B V) -- consistent
+   with the over-stiffening identified in commit 6a91093.
+
+   WHAT TO QUOTE INSTEAD: 28/30 unconstrained members have imaginary phonon modes
+   somewhere in the zone against 1/30 constrained, and the unconstrained committee has
+   to discard a median 36% of its spectrum (up to 91%) before gamma is even computable,
+   against a median 0% constrained.  Relaxed lattice constants span 3.979-4.297 A
+   unconstrained against 4.04493-4.04494 constrained, the pin holding to five decimals.
+
+   Be careful with the variance ratio (0.45).  When members discard different fractions
+   of their spectrum they are averaging over different mode sets, so it is not a clean
+   like-for-like comparison.  Lead with the imaginary-mode count.
+   """,
+),
+
 ]
 
 figure_by_id(id) = (i = findfirst(f -> f.id == id, FIGURES);

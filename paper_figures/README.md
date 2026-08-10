@@ -59,6 +59,7 @@ is 5.2 GB and drives a ~15–20 GB memory peak; `models/Al_12_4_6A_2_/A.csv` is 
 | `surface_energy_001` | `scripts/qoi/surface_energy_vacuum.jl` | Al(001) surface energy across both committees, full relaxation per member. **The validated QoI** |
 | `surface_energy_111` | `scripts/qoi/surface_energy_vacuum.jl` | Al(111), the close-packed face — same script, `SURFACE=111`. Must come out **below** (001) |
 | `vacancy_formation` | `scripts/qoi/vacancy_formation.jl` | Vacancy formation energy across both committees. Spread comparison only — see the caveat below |
+| `gruneisen` | `scripts/qoi/gruneisen_committee.jl` | Grüneisen parameter across both committees. Converged, but the absolute value is ~2.2× high — quote the imaginary-mode counts, not γ |
 
 ### The two QoIs, and which one to quote
 

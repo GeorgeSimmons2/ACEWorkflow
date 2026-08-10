@@ -132,6 +132,11 @@ function oriented_cell(a)
         all(x -> -1e-8 <= x < 1 - 1e-8, s) && push!(pts, p)
     end
     length(pts) == 3 || error("(111) cell enumeration found $(length(pts)) atoms, expected 3")
+    # a3 must be perpendicular to the surface plane, or add_vacuum opens a SHEARED gap
+    # rather than one along the normal, and gamma is meaningless.  Verified: for a cubic
+    # lattice [111] is the (111) normal, so both dot products are exactly zero.
+    (abs(dot(a3, a1)) < 1e-8 && abs(dot(a3, a2)) < 1e-8) ||
+        error("a3 is not normal to the surface plane: a3·a1 = $(dot(a3,a1)), a3·a2 = $(dot(a3,a2))")
     atoms = [AtomsBase.Atom(element, p .* u"Å") for p in pts]
     return periodic_system(atoms, [a1, a2, a3] .* u"Å")
 end
