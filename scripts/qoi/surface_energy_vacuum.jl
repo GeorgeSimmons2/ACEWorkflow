@@ -44,6 +44,7 @@
 #
 # Run:  julia --project -t <ncores> scripts/qoi/surface_energy_vacuum.jl [unconstrained.csv constrained.csv]
 #   ELEMENT=Al  SURFACE=001|111  N_SUPER=4  VACUUM=12.0  NORMAL=3  QOI_THREADS=<n>
+#   ENS1_CSV/ENS2_CSV  ENS1_TAG/ENS2_TAG  ENS1_CENTRE/ENS2_CENTRE ("lin_params" or a path)
 #   MODELDIR=models/Al_12_4_6A_2_  FIGW=540
 
 using ACEWorkflow, ACEpotentials, AtomsBase, AtomsBuilder, GeometryOptimization
@@ -67,12 +68,25 @@ EV_PER_A2_TO_J_PER_M2 = 16.0218
 
 BLU = RGBf(0.0, 0.447, 0.698); RED = RGBf(0.80, 0.15, 0.15)
 
+# ── the two ensembles, configurable so this serves any model ────────────────
+# Each ensemble names its OWN central model, because they are not always the same one.
+# For Al_12 the unconstrained committee is drawn around lin_params and the constrained
+# one around theta_mean (the phonon-repaired constrained mean).  For Al_20 BOTH the
+# naive and rejection-sampled committees come from the same hypercube around
+# lin_params, and no theta_mean exists.  ENS*_CENTRE is either the literal string
+# "lin_params" or a path to a CSV holding one coefficient vector.
 THETA_MEAN = "$RES/bandpath_undotted_ncell4_densek/theta_mean.csv"
+ENS1_CSV = length(ARGS) >= 1 ? ARGS[1] :
+           get(ENV, "ENS1_CSV", "$RES/naive_vs_constrained/samples_naive.csv")
+ENS2_CSV = length(ARGS) >= 2 ? ARGS[2] :
+           get(ENV, "ENS2_CSV", "$RES/cutting_plane_full_cloud/committee_rejection_full_cloud.csv")
+ENS1_TAG = get(ENV, "ENS1_TAG", "unconstrained")
+ENS2_TAG = get(ENV, "ENS2_TAG", "constrained")
 ensembles = [
- (tag = "unconstrained", label = "unconstrained POPS", col = RED, centre = :lin_params,
-  csv = length(ARGS) >= 1 ? ARGS[1] : "$RES/naive_vs_constrained/samples_naive.csv"),
- (tag = "constrained",   label = "constrained POPS",   col = BLU, centre = :theta_mean,
-  csv = length(ARGS) >= 2 ? ARGS[2] : "$RES/cutting_plane_full_cloud/committee_rejection_full_cloud.csv"),
+ (tag = ENS1_TAG, label = get(ENV, "ENS1_LABEL", "$ENS1_TAG POPS"), col = RED,
+  centre = get(ENV, "ENS1_CENTRE", "lin_params"), csv = ENS1_CSV),
+ (tag = ENS2_TAG, label = get(ENV, "ENS2_LABEL", "$ENS2_TAG POPS"), col = BLU,
+  centre = get(ENV, "ENS2_CENTRE", THETA_MEAN),  csv = ENS2_CSV),
 ]
 
 # ── model ───────────────────────────────────────────────────────────────────
@@ -217,19 +231,24 @@ function surface_energy_many(θs; label="")
 end
 
 # ── central models ──────────────────────────────────────────────────────────
-centres = Dict{Symbol,Vector{Float64}}(:lin_params => lin_params)
-if any(e -> e.centre === :theta_mean, ensembles)
-    isfile(THETA_MEAN) || error("missing $THETA_MEAN")
-    centres[:theta_mean] = vec(readdlm(THETA_MEAN, ','))
+function load_centre(c)
+    c == "lin_params" && return lin_params
+    isfile(c) || error("central model not found: $c  (set ENS*_CENTRE)")
+    v = vec(readdlm(c, ','))
+    length(v) == n_params ||
+        error("$c holds $(length(v)) coefficients, model has $n_params")
+    return v
 end
+# a Dict comprehension dedupes: if both ensembles share a centre it is built once
+centres = Dict(e.centre => load_centre(e.centre) for e in ensembles)
 println("\n── central models ──"); flush(stdout)
-centre_res = Dict{Symbol,Any}()
+centre_res = Dict{String,Any}()
 for (k, θc) in centres
     r = surface_energy(deepcopy(model), θc); centre_res[k] = r
-    @printf("  %-11s γ = %+.4f eV/Å² = %+.3f J/m²   (unrelaxed %+.3f J/m², relaxation %+.3f)\n",
-            k, r.γ, r.γ*EV_PER_A2_TO_J_PER_M2, r.γ_un*EV_PER_A2_TO_J_PER_M2,
+    @printf("  %-22s γ = %+.4f eV/Å² = %+.3f J/m²   (unrelaxed %+.3f J/m², relaxation %+.3f)\n",
+            basename(k), r.γ, r.γ*EV_PER_A2_TO_J_PER_M2, r.γ_un*EV_PER_A2_TO_J_PER_M2,
             (r.γ - r.γ_un)*EV_PER_A2_TO_J_PER_M2)
-    @printf("  %-11s %d atoms, a = %.4f Å, face area %.2f Å², slab thickness %.2f Å\n",
+    @printf("  %-22s %d atoms, a = %.4f Å, face area %.2f Å², slab thickness %.2f Å\n",
             "", r.n_atoms, r.a, r.A, r.thick)
     r.thick > 2rcut || @warn "slab thickness $(round(r.thick;digits=2)) Å ≤ 2×cutoff — the two surfaces interact THROUGH THE SLAB; raise N_SUPER"
     r.γ > 0 || @warn "γ ≤ 0 for $k — a surface that lowers the energy is unphysical"
@@ -261,7 +280,7 @@ J(x) = x .* EV_PER_A2_TO_J_PER_M2
 println("\n══ SURFACE ENERGY  $(element)($(SURFACE))  ═══════════════════════════════")
 for e in ensembles
     @printf("%-14s central model (%s): γ = %+.3f J/m²\n",
-            e.tag, e.centre, centre_res[e.centre].γ * EV_PER_A2_TO_J_PER_M2)
+            e.tag, basename(e.centre), centre_res[e.centre].γ * EV_PER_A2_TO_J_PER_M2)
 end
 println()
 @printf("%-14s %6s %11s %10s %10s %10s %8s\n",
@@ -271,7 +290,7 @@ for e in ensembles
     @printf("%-14s %6d %11.4f %10.4f %10.4f %10.4f %8d\n",
             e.tag, length(g), mean(g), std(g), minimum(g), maximum(g), count(<=(0), g))
 end
-let u = out["unconstrained"], c = out["constrained"]
+let u = out[ENS1_TAG], c = out[ENS2_TAG]
     @printf("\nspread ratio  σ_constrained / σ_unconstrained = %.3f\n", std(c.γ)/std(u.γ))
     @printf("range  ratio  = %.3f\n",
             (maximum(c.γ)-minimum(c.γ)) / (maximum(u.γ)-minimum(u.γ)))

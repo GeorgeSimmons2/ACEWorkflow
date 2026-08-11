@@ -58,6 +58,9 @@ is 5.2 GB and drives a ~15–20 GB memory peak; `models/Al_12_4_6A_2_/A.csv` is 
 | `thermal_expansion_aT` | `scripts/uq/replot_thermal_expansion_aT_Al_12_4_6A_2.jl` | a(T) under NPT for the constrained and unconstrained members — scatter, linear fit, α quoted. Built at 260 pt for a side-by-side pair. Replot only, runs no MD |
 | `surface_energy_001` | `scripts/qoi/surface_energy_vacuum.jl` | Al(001) surface energy across both committees, full relaxation per member. **The validated QoI** |
 | `surface_energy_111` | `scripts/qoi/surface_energy_vacuum.jl` | Al(111), the close-packed face — same script, `SURFACE=111`. Must come out **below** (001) |
+| `al16_ensembles` | `scripts/uq/pinned_rejection_ensembles_Al_16_4_6A_3.jl` | **Run first.** Al_16 pinned hypercube, two ensembles: with and without a phonon-positivity predicate |
+| `al16_bands` | `scripts/qoi/bands_two_ensembles_Al_16_4_6A_3.jl` | Their phonon bands side by side, shared frequency axis, native Hessian per member |
+| `al16_parity_calibration` | `scripts/uq/parity_calibration_Al_16_4_6A_3.jl` | Parity and calibration for both, eV/atom |
 | `vacancy_formation` | `scripts/qoi/vacancy_formation.jl` | Vacancy formation energy across both committees. Spread comparison only — see the caveat below |
 | `gruneisen` | `scripts/qoi/gruneisen_committee.jl` | Grüneisen parameter across both committees. Converged, but the absolute value is ~2.2× high — quote the imaginary-mode counts, not γ |
 
@@ -126,6 +129,14 @@ hypercube_full_cloud_bands_Al_12_4_6A_2.jl  + data/Al/manual_df_test_Al.xyz
 naive_vs_constrained_fullcloud_Al_12_4_6A_2.jl
    └─► naive vs constrained bands, shared frequency axis
 ```
+
+The Al_16 trio is a three-stage pipeline: `al16_ensembles` writes the two ensemble CSVs
+that `al16_bands` and `al16_parity_calibration` both read. It is the cleanest
+constrained-vs-unconstrained comparison in the set — both ensembles come from the *same*
+hypercube with the *same* seed and differ only in the phonon predicate, so nothing else
+can account for a difference. Headline: ~13% of the pinned box is dynamically unphysical
+(86.96% acceptance), removing it takes the soft members from 4/20 to 0/20, and costs
+3.3 pp of energy coverage and nothing in force coverage.
 
 Ordering matters in one place only: `naive_vs_constrained_bands` consumes
 `committee_rejection_full_cloud.csv`, so `fullcloud_bands_parity_calibration` has to run

@@ -571,6 +571,149 @@ const FIGURES = [
    """,
 ),
 
+(
+ id      = "al16_ensembles",
+ title   = "Al_16_4_6A_3: pinned POPS hypercube with and without a phonon-positivity "*
+           "predicate — stage 1 of three, builds the two ensembles",
+ script  = "scripts/uq/pinned_rejection_ensembles_Al_16_4_6A_3.jl",
+ cmd     = "BUILD_THREADS=16 julia --project -t 40 scripts/uq/pinned_rejection_ensembles_Al_16_4_6A_3.jl",
+ env     = ["N_MEMBERS" => "20", "PIN_TOL" => "1e-6  # Angstrom", "ACCEPT_TOL" => "-0.05  # THz",
+            "LEV_PCT" => "0.5", "N_CELL" => "4", "BUILD_THREADS" => "8"],
+ outputs = ["models/Al_16_4_6A_3_/results/pinned_ensembles/ensemble_unconstrained.csv",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/ensemble_constrained.csv",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/pinned_ensembles.jls",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/bandpath_4x4x4_aref.jls"],
+ inputs  = [
+   ("models/Al_16_4_6A_3_/Al_16_4_6A_3.json", "scripts/model_building/build_model.jl", "fitted ACE model, 684 params"),
+   ("models/Al_16_4_6A_3_/A.csv",             "scripts/model_building/build_model.jl", "design matrix, ~1.9 GB"),
+   ("models/Al_16_4_6A_3_/Y.csv",             "scripts/model_building/build_model.jl", ""),
+   ("models/Al_16_4_6A_3_/P.csv",             "scripts/model_building/build_model.jl", "preconditioner"),
+   ("models/Al_16_4_6A_3_/W.csv",             "scripts/model_building/build_model.jl", "row weights"),
+   ("models/Al_16_4_6A_3_/lin_params.csv",    "scripts/model_building/build_model.jl", "mean-fit coefficients"),
+ ],
+ notes   = """
+   RUN THIS FIRST — al16_bands and al16_parity_calibration both consume its two CSVs.
+
+   Closed-form rank-one pin of the WHOLE forest (all N corrections, all verified), then
+   the top-50%-by-CONSTRAINED-leverage subset feeds the hypercube.  Note that is lev_c,
+   not the unconstrained lev that POPSRegression.corrections ranks by, so the cloud is a
+   slightly different subset from the naive runs -- deliberate, since lev_c is the
+   leverage of the problem actually being solved.
+
+   Two draws from the SAME box with the SAME seed, differing only in the predicate
+   (b''.theta > 0, then min omega >= ACCEPT_TOL), so the pair is paired and any
+   difference downstream is the predicate alone.  "Unconstrained" therefore means "not
+   phonon-constrained" -- it is still a_eq-pinned.
+
+   PIN_TOL is in ANGSTROM and tests the right quantity: Delta a_i = -b'.(theta_i -
+   lin_params) / (b''.theta_i), each member's equilibrium shift RELATIVE to the mean
+   model.  Testing |b'.theta| instead would fold in the mean model's own
+   relax_lattice_constant residual, which every member shares and which is not a pin
+   failure.  Achieved: ~3e-6 A spread in the relaxed lattice constant across members.
+
+   DO NOT read the kept-direction count as a pin check.  It came out 439/684, not 683:
+   hypercube() cuts at eigvals > max*1e-8 and the delta cloud is numerically rank
+   deficient far beyond the one direction the pin removes.  The pin is verified by
+   max |b'.eigvec| over the retained directions, which is what makes every draw pinned.
+
+   Result: 86.96% acceptance, so ~13% of the pinned box is dynamically unphysical --
+   3 rejections, all on soft modes, none on b''.theta <= 0.
+
+   Uses the 3-row undotted builder: full H_basis at 684 params would be 3.2 GB, three
+   rows is 12.6 MB.
+   """,
+),
+
+(
+ id      = "al16_bands",
+ title   = "Al_16_4_6A_3: phonon bands of the two ensembles side by side on one shared "*
+           "frequency axis, independent relaxation and native Hessian per member",
+ script  = "scripts/qoi/bands_two_ensembles_Al_16_4_6A_3.jl",
+ cmd     = "julia --project -t 40 scripts/qoi/bands_two_ensembles_Al_16_4_6A_3.jl",
+ env     = ["N_CELL" => "4", "N_PER_SEG" => "[20,20,20,20,60] — MUST match stage 1",
+            "UNSTABLE" => "-0.05", "QOI_THREADS" => "", "FIGW" => "540"],
+ outputs = ["models/Al_16_4_6A_3_/results/pinned_ensembles/bands_two_ensembles.pdf",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/bands_two_ensembles.png",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/bands_unconstrained.csv",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/bands_constrained.csv",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/bands_two_ensembles.jls"],
+ inputs  = [
+   ("models/Al_16_4_6A_3_/Al_16_4_6A_3.json", "scripts/model_building/build_model.jl", "fitted ACE model, 684 params"),
+   ("models/Al_16_4_6A_3_/lin_params.csv",    "scripts/model_building/build_model.jl", "mean model; both ensembles are lin_params + delta"),
+   ("models/Al_16_4_6A_3_/results/pinned_ensembles/ensemble_unconstrained.csv",
+    "scripts/uq/pinned_rejection_ensembles_Al_16_4_6A_3.jl", "pinned, no phonon predicate"),
+   ("models/Al_16_4_6A_3_/results/pinned_ensembles/ensemble_constrained.csv",
+    "scripts/uq/pinned_rejection_ensembles_Al_16_4_6A_3.jl", "pinned, phonon-positive"),
+   ("scripts/bandpath_phonon_uq/lib.jl", :repo, "included helper library"),
+ ],
+ notes   = """
+   RUN al16_ensembles FIRST.
+
+   Stage 1 screens proposals with ONE undotted Hessian at a_eq, which is exact only
+   because the members are pinned there.  This stage does not inherit that assumption:
+   every member gets its own relax_lattice_constant and its own native Hessian.  A
+   CONTROL prints native min omega against stage 1's screened value.
+
+   The control is only meaningful if BOTH stages sample the same q-points.  The first
+   run had stage 2 on a scalar N_PER_SEG=20 against stage 1's [20,20,20,20,60] and the
+   control read 0.14 THz -- entirely the q-grid, nothing to do with the Hessians.  Now
+   matched; expect ~1e-3 THz or below.
+
+   Result: unconstrained 4/20 soft, constrained 0/20, so the predicate held through the
+   native rebuild.  Relaxed lattice constants span ~3e-6 A, confirming the pin.
+
+   The spread ratio (0.0145) is dominated by a single unconstrained member at
+   -5.68 THz; quote the soft counts, not the ratio.
+
+   Both panels MUST share a frequency axis -- the comparison is how much wider the
+   unconstrained ensemble is, and independent axes would autoscale that away.
+   """,
+),
+
+(
+ id      = "al16_parity_calibration",
+ title   = "Al_16_4_6A_3: test-set parity and calibration for both ensembles, energies "*
+           "per atom — four independent figures",
+ script  = "scripts/uq/parity_calibration_Al_16_4_6A_3.jl",
+ cmd     = "julia --project -t 8 scripts/uq/parity_calibration_Al_16_4_6A_3.jl 20",
+ env     = ["FIGW" => "540"],
+ outputs = ["models/Al_16_4_6A_3_/results/pinned_ensembles/parity_calibration/parity_unconstrained.pdf",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/parity_calibration/parity_constrained.pdf",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/parity_calibration/calibration_unconstrained.pdf",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/parity_calibration/calibration_constrained.pdf",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/parity_calibration/parity_calibration_summary.csv",
+            "models/Al_16_4_6A_3_/results/pinned_ensembles/parity_calibration/parity_calibration_predictions.jls"],
+ inputs  = [
+   ("models/Al_16_4_6A_3_/Al_16_4_6A_3.json", "scripts/model_building/build_model.jl", "fitted ACE model, 684 params"),
+   ("models/Al_16_4_6A_3_/lin_params.csv",    "scripts/model_building/build_model.jl", "mean model; both ensembles are lin_params + delta"),
+   ("models/Al_16_4_6A_3_/results/pinned_ensembles/ensemble_unconstrained.csv",
+    "scripts/uq/pinned_rejection_ensembles_Al_16_4_6A_3.jl", "pinned, no phonon predicate"),
+   ("models/Al_16_4_6A_3_/results/pinned_ensembles/ensemble_constrained.csv",
+    "scripts/uq/pinned_rejection_ensembles_Al_16_4_6A_3.jl", "pinned, phonon-positive"),
+   ("scripts/bandpath_phonon_uq/lib.jl", :repo, "included helper library"),
+   ("data/Al/manual_df_test_Al.xyz", :external, "held-out test set, ~18 MB"),
+   ("scripts/uq/lib_parity_calibration.jl", :repo, "shared parity/calibration plotting"),
+ ],
+ notes   = """
+   RUN al16_ensembles FIRST.  Fast model load, so the 1.9 GB A.csv is never read.
+
+   per_atom=true throughout: energies in eV/atom, RMSE quoted in meV/atom.  The July
+   figures in results/bandpath_undotted/ are TOTAL-energy and are NOT comparable.
+
+   IDENTICAL RMSE AND BIAS FOR BOTH ENSEMBLES IS CORRECT, not a bug.  RMSE compares the
+   POINT prediction against DFT, and the point prediction is lin_params for both; the
+   committee only enters through the min/max envelope and the deviation histogram.  It
+   came out 0.0618 eV/atom and 0.2021 eV/A for both, to six figures -- a useful
+   consistency check that the two runs really do share a point model.
+
+   COVERAGE is the number that moves: energy 66.76% -> 63.50% (-3.26 pp), force
+   76.97% -> 76.90% (-0.07 pp).  So removing the ~13% of the box that is dynamically
+   unphysical costs about 3 pp of energy coverage and nothing in force coverage.
+   Coverage is committee min/max envelope containment, not a calibrated interval --
+   relative between the two columns, not an absolute claim.
+   """,
+),
+
 ]
 
 figure_by_id(id) = (i = findfirst(f -> f.id == id, FIGURES);
