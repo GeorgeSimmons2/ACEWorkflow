@@ -23,6 +23,7 @@
 #   compare-published    how far did regenerating the committee move the answer?
 #   all                  1 → 2 → 3, chained with SLURM dependencies
 #   reproduce            NPT on the saved θ (no committee) — the reproduction path
+#   paired               NPT on naive[15] vs ITS OWN repair — isolates the constraint
 #   verify-determinism   run stage 1 twice into separate dirs and compare
 #
 # Env:  REPO (repo root)   RHO_INTERVAL (pinned OSQP rho schedule, default 25)
@@ -101,6 +102,42 @@ reproduce|published)
   echo "When both finish:"
   echo "    bash npt_trajectories/run_pipeline.sh figure-repro       # plot the rerun"
   echo "    bash npt_trajectories/run_pipeline.sh compare-reproduced # rerun vs published a(T)"
+  ;;
+
+paired)
+  # The published red and blue are unrelated vectors (‖Δθ‖ = 9.04), so their difference
+  # confounds "constraining helped" with "different member".  This runs naive[15] against
+  # committee_repaired[15] -- the SAME POPS member before and after constraining -- so the
+  # only difference between the two trajectories is the constraint.
+  # Both arms use the SAME driver (the constrained one, which carries the FCC-survival
+  # diagnostic), so the analysis is identical on both sides too.
+  echo "── paired before/after: naive[15] vs its own repair ────────────────"
+  julia --project="$REPO" "$HERE/make_paired_members.jl" || exit 1
+  PAIR="$RES/paired_before_after"
+  J1=$(THETA_FILE="$PAIR/theta_paired_naive.csv" \
+       OUTDIR="$RES/repro_paired_naive" \
+       submit --job-name=paired_naive "$HERE/run_npt_constrained_softest.slurm")
+  J2=$(THETA_FILE="$PAIR/theta_paired_constrained.csv" \
+       OUTDIR="$RES/repro_paired_constrained" \
+       submit --job-name=paired_con "$HERE/run_npt_constrained_softest.slurm")
+  echo "    before (naive[15])    : job $J1 → results/repro_paired_naive/"
+  echo "    after  (repaired[15]) : job $J2 → results/repro_paired_constrained/"
+  echo
+  echo "When both finish:"
+  echo "    bash npt_trajectories/run_pipeline.sh figure-paired"
+  ;;
+
+figure-paired)
+  echo "── stage 3: figure, paired before/after ────────────────────────────"
+  for d in "$RES/repro_paired_naive" "$RES/repro_paired_constrained"; do
+    [ -f "$d/thermal_expansion_summary.csv" ] || {
+      echo "    missing $d/thermal_expansion_summary.csv -- check squeue"; exit 1; }
+  done
+  DIR_UNCON="$RES/repro_paired_naive" \
+  DIR_CON="$RES/repro_paired_constrained" \
+  OUT=${OUT:-"$REPO/thermal_expansion_vs_experiment/thermal_expansion_aT_paired"} \
+    julia --project="$REPO" \
+    "$REPO/thermal_expansion_vs_experiment/plot_thermal_expansion_vs_experiment.jl"
   ;;
 
 compare-reproduced)

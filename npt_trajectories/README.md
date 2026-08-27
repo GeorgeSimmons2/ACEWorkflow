@@ -38,6 +38,58 @@ vectors. Use it only to claim end-to-end reproducibility, and only after
 
 ---
 
+## Paired vs unpaired: what the red/blue comparison actually isolates
+
+The published figure compares the **worst member of the naive forest** against the
+**softest member of the rejection-sampled constrained committee**. Those are unrelated
+vectors — ‖θ_blue − θ_red‖ = 9.04 — so their difference confounds *constraining helped*
+with *different member*.
+
+The pairing to fix it already exists in the data. In the committee script `committee[k]`
+is the cutting-plane repair of `naive[k]`: same observation index, same leverage/residual
+direction, the QP started from that member's own rows. So `committee_repaired.csv` row k
+is the constrained counterpart of naive forest member k.
+
+**Which k:** the published red vector *is* forest member 15 — verified, max |Δ| = 6.6×10⁻⁹
+against `theta_naive_worst.csv`, next closest member 0.145 away. It is also the worst
+member under the multi-volume ranking. So the red series does not change; only blue does.
+
+| | worst over volumes | ‖θ − θ_naive[15]‖ |
+| --- | --- | --- |
+| `naive[15]` (red, unchanged) | −11.4711 THz | — |
+| `repaired[15]` (**paired** blue) | +0.1500 THz | 3.99 |
+| published rejection sample (unpaired blue) | +0.1503 THz | 9.04 |
+
+```bash
+bash npt_trajectories/run_pipeline.sh paired         # naive[15] vs its own repair
+bash npt_trajectories/run_pipeline.sh figure-paired  # plot it
+```
+
+Both arms run through the **same** driver — the constrained one, which carries the
+FCC-survival diagnostic — so the analysis is identical on both sides as well as the
+member.
+
+### What the paired comparison gives up
+
+Every repaired member terminates at exactly `cut_margin_THz = 0.15`, i.e. *on* the
+constraint boundary: the cutting-plane loop stops the moment it is satisfied. So
+`repaired[15]` is the **minimally** constrained version of that member, not a typical
+draw from the constrained set. The rejection-sampled member is a sample from that set
+(+0.1503 to +0.2033 across the ensemble).
+
+Both are legitimate and answer different questions:
+
+| question | comparison |
+| --- | --- |
+| does constraining fix **this member**? | paired — `naive[15]` → `repaired[15]` |
+| is the constrained **ensemble's** worst case better than the naive ensemble's? | unpaired — the published figure |
+
+Use paired when the claim is about the effect of the constraint. Keep the unpaired one
+if the claim is about the ensembles. They are not interchangeable and the caption should
+say which it is.
+
+---
+
 ## Determinism: why rerunning stage 1 does not give you the same parameters
 
 **Measured, not assumed.** The multi-volume committee was rerun under an identical seed
