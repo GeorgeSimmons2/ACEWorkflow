@@ -80,7 +80,8 @@ log_every     = 50
 result = load_model(element, 12, 4, 6, 2; dataset_name=dataset)
 model  = result.model; lin_params = result.lin_params; n_params = length(lin_params)
 P = result.P; Ap = Diagonal(result.W)*result.A/P; Yw = result.W.*result.Y; λ = 1.0/size(Ap,1)
-committee_dir = "$(result.dir)/results/$committee_subdir"
+# [REPRO] COMMITTEE_DIR lets stage 2 consume the committee stage 1 just built
+committee_dir = get(ENV, "COMMITTEE_DIR", "$(result.dir)/results/$committee_subdir")
 # [REPRO] fresh directory by default so a rerun cannot overwrite the published
 # trajectories in results/npt_thermal_expansion_naive_worst_member/.
 outdir = get(ENV, "OUTDIR", "$(result.dir)/results/repro_npt_thermal_expansion_naive_worst_member"); mkpath(outdir)
@@ -157,8 +158,10 @@ end
 # CSVs (deterministic, seed 1234).  The published run wrote the vector it actually used
 # next to its outputs, so check against it: if the upstream committee has changed, this
 # run would produce a different trajectory from the one the figure uses.
-let ref = "$(result.dir)/results/npt_thermal_expansion_naive_worst_member/theta_naive_worst.csv"
-    if isfile(ref) && npt_vector == :worst_naive
+let ref = get(ENV, "THETA_REF", "$(result.dir)/results/npt_thermal_expansion_naive_worst_member/theta_naive_worst.csv")
+    if ref == "none"
+        println("REPRO CHECK: skipped (THETA_REF=none) — running a freshly generated member")
+    elseif isfile(ref) && npt_vector == :worst_naive
         θ_ref = vec(readdlm(ref, ','))
         d = maximum(abs.(θ_npt .- θ_ref))
         @printf("REPRO CHECK: max |θ − θ_published| = %.3e\n", d)

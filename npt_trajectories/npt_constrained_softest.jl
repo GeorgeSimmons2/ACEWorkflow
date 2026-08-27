@@ -76,8 +76,9 @@ cluster_cutoff = 2.2
 result = load_model(element, 12, 4, 6, 2; dataset_name=dataset)
 model  = result.model; lin_params = result.lin_params; n_params = length(lin_params)
 # [REPRO] the published run read the multi-volume committee named in `committee_subdir`
-# above; the working copy now points at results/aeq_cheap_vs_expensive instead
-committee_dir = "$(result.dir)/results/$committee_subdir"
+# above; the working copy now points at results/aeq_cheap_vs_expensive instead.
+# COMMITTEE_DIR lets stage 2 consume the committee stage 1 just built.
+committee_dir = get(ENV, "COMMITTEE_DIR", "$(result.dir)/results/$committee_subdir")
 tag    = npt_member isa Integer ? "rejection$(npt_member)" : string(npt_member)
 # [REPRO] fresh directory by default so a rerun cannot overwrite the published
 # trajectories in results/npt_multivolume_softest/.  Set OUTDIR to compare in place.
@@ -105,8 +106,10 @@ length(θ_npt) == n_params || error("θ has $(length(θ_npt)) entries, expected 
 # longer the member behind the figure — fail loudly rather than silently run a different
 # one.  See results/npt_multivolume_softest/PROVENANCE.md: theta_used.csv is byte
 # identical to row 18 of the multi-volume rejection committee.
-let ref = "$(result.dir)/results/npt_multivolume_softest/theta_used.csv"
-    if isfile(ref)
+let ref = get(ENV, "THETA_REF", "$(result.dir)/results/npt_multivolume_softest/theta_used.csv")
+    if ref == "none"
+        println("REPRO CHECK: skipped (THETA_REF=none) — running a freshly generated member")
+    elseif isfile(ref)
         θ_ref = vec(readdlm(ref, ','))
         d = maximum(abs.(θ_npt .- θ_ref))
         @printf("REPRO CHECK: max |θ − θ_published| = %.3e\n", d)
@@ -116,9 +119,11 @@ let ref = "$(result.dir)/results/npt_multivolume_softest/theta_used.csv"
             DIFFERENT trajectory from the one the figure uses.  To run the published
             member regardless, point npt_member at the saved vector directly.""")
     else
-        @warn "no theta_used.csv at $ref — cannot verify this is the published member"
+        @warn "no reference θ at $ref — cannot verify this is the published member"
     end
 end
+# [REPRO] always record the vector actually used, so a later rerun has a reference
+writedlm("$outdir/theta_used.csv", θ_npt, ',')
 flush(stdout)
 
 # ── stability of this member across the constrained volume range ────────────
