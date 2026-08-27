@@ -17,6 +17,10 @@ No molecular dynamics is repeated — both model series are read from the
 `thermal_expansion_summary.csv` files the NPT runs already wrote, so the points are the
 published numbers.
 
+To regenerate those trajectories from scratch, see **`../npt_trajectories/`**, which
+holds pinned copies of the two NPT drivers. Pinned because the working copies in
+`scripts/uq/` have since been repurposed and no longer reproduce these runs.
+
 ## The experimental data needs a unit conversion, and it matters
 
 `wilson_1941_aluminium.csv` is Wilson's table from p. 240 of the paper (ten points,
