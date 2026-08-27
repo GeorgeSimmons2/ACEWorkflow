@@ -12,16 +12,29 @@ stage 3  figure      ../thermal_expansion_vs_experiment/plot_…jl
 ```
 
 ```bash
-bash npt_trajectories/run_pipeline.sh published            # reproduce the figure as published
-bash npt_trajectories/run_pipeline.sh all                  # regenerate everything from the constraints down
-bash npt_trajectories/run_pipeline.sh verify-determinism   # does stage 1 reproduce itself?
-bash npt_trajectories/run_pipeline.sh figure               # local, seconds
+bash npt_trajectories/run_pipeline.sh reproduce            # ← rerun the analysis on the saved θ
+bash npt_trajectories/run_pipeline.sh figure-repro         # plot the rerun
+bash npt_trajectories/run_pipeline.sh compare-reproduced   # rerun vs published a(T)
 ```
 
-**`published` and `all` are not the same thing, and the difference is the whole point of
-the next section.** `published` reuses the existing committees, so the parameter vectors
-are the exact ones behind the figure. `all` rebuilds them, and will not land on the same
-vectors.
+### `reproduce` is the mode you want
+
+It builds no committee and reads none. Each driver loads the θ the published run saved
+beside its own outputs (`THETA_FILE`, defaulted for you) and runs the NPT on it. Since
+committee members are not reproducible run to run — next section — rerunning the
+published trajectory *means* rerunning the published θ, and that vector is already on
+disk. Stage 1 is not on this path at all.
+
+The rerun is statistically, not bitwise, identical to the published one: Molly draws a
+fresh Langevin/barostat stream, so a(T) should agree within the fluctuation width already
+quoted as the error bars, and `compare-reproduced` prints exactly that comparison. Two
+`reproduce` runs *are* identical to each other — the RNG is re-seeded immediately before
+the sweep (`MD_SEED`), so the MD no longer depends on how many draws the θ-selection route
+happened to consume.
+
+`all` additionally rebuilds the committees and will **not** land on the same parameter
+vectors. Use it only to claim end-to-end reproducibility, and only after
+`verify-determinism` comes back clean.
 
 ---
 

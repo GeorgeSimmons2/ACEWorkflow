@@ -87,7 +87,18 @@ outdir = get(ENV, "OUTDIR", "$(result.dir)/results/repro_npt_multivolume_softest
 flush(stdout)
 
 # ── load the chosen member ──────────────────────────────────────────────────
-θ_npt = if npt_member === :softest
+# [REPRO] THETA_FILE runs a SAVED parameter vector directly, with no committee at all.
+# This is the reproduction path: committee members are not reproducible run to run (see
+# README.md), so the only way to rerun the published trajectory is to rerun the published
+# theta.  Default is the vector the published run saved beside its own outputs.
+THETA_FILE = get(ENV, "THETA_FILE",
+                 "$(result.dir)/results/npt_multivolume_softest/theta_used.csv")
+
+θ_npt = if !isempty(THETA_FILE)
+    isfile(THETA_FILE) || error("THETA_FILE=$THETA_FILE does not exist")
+    @printf("θ from saved vector: %s  (no committee needed)\n", THETA_FILE)
+    vec(readdlm(THETA_FILE, ','))
+elseif npt_member === :softest
     vec(readdlm("$committee_dir/theta_npt_softest.csv", ','))
 elseif npt_member === :median
     vec(readdlm("$committee_dir/theta_npt_median.csv", ','))
@@ -99,7 +110,8 @@ else
     error("npt_member must be :softest, :median, or an Int")
 end
 length(θ_npt) == n_params || error("θ has $(length(θ_npt)) entries, expected $n_params")
-@printf("NPT member: %s  (from %s)\n", tag, committee_dir)
+@printf("NPT member: %s  (from %s)\n", tag,
+        isempty(THETA_FILE) ? committee_dir : "saved θ")
 
 # [REPRO] the published run copied its own parameter vector next to its outputs.  If the
 # upstream committee has been regenerated, the member this script selects today is no
@@ -107,7 +119,9 @@ length(θ_npt) == n_params || error("θ has $(length(θ_npt)) entries, expected 
 # one.  See results/npt_multivolume_softest/PROVENANCE.md: theta_used.csv is byte
 # identical to row 18 of the multi-volume rejection committee.
 let ref = get(ENV, "THETA_REF", "$(result.dir)/results/npt_multivolume_softest/theta_used.csv")
-    if ref == "none"
+    if !isempty(THETA_FILE) && abspath(THETA_FILE) == abspath(ref)
+        println("REPRO CHECK: trivially satisfied — θ was loaded from the reference file itself")
+    elseif ref == "none"
         println("REPRO CHECK: skipped (THETA_REF=none) — running a freshly generated member")
     elseif isfile(ref)
         θ_ref = vec(readdlm(ref, ','))
@@ -294,6 +308,14 @@ N_super      = supercell[1]
 a_of_T = Float64[]; a_of_T_std = Float64[]; minω_of_T = Float64[]
 coord_of_T = Float64[]; nn_of_T = Float64[]; fcc_of_T = Bool[]
 bands_hi = nothing; a_hi = a0
+# [REPRO] Re-seed immediately before the sweep.  Everything above this line consumes a
+# different number of random draws depending on how θ was obtained — the saved-θ path
+# skips the forest re-derivation, which itself calls rand() — so without this the
+# Langevin/barostat stream would depend on the selection route.  Re-seeding here makes
+# the MD depend only on MD_SEED, so two `reproduce` runs give identical trajectories.
+# It does NOT bit-match the original published run, whose stream started from a
+# different point; agreement there is statistical, within the quoted fluctuation width.
+Random.seed!(parse(Int, get(ENV, "MD_SEED", "1234")))
 println("\n── NPT sweep (0 Pa) on $tag from a₀ = $(round(a0;digits=5)) Å ─────────────")
 for (ti, T_K) in enumerate(temperatures_K)
     global bands_hi, a_hi

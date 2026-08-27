@@ -3,16 +3,17 @@
 #
 #   bash npt_trajectories/run_pipeline.sh <stage>
 #
-# ┌ WHICH STAGE DO YOU WANT? ─────────────────────────────────────────────────┐
-# │ published   Reproduce the figure AS PUBLISHED.  Skips stage 1 and reuses   │
-# │             the existing committees, so the parameter vectors are the      │
-# │             exact ones behind the figure.  Stage 2 aborts unless the       │
-# │             members it selects are byte-identical to the published ones.   │
+# ┌ START HERE ───────────────────────────────────────────────────────────────┐
+# │ reproduce   Rerun the NPT on the SAVED parameter vectors.  No committee is │
+# │             built and none is read — the θ behind the figure are on disk,  │
+# │             so reproducing the trajectory means rerunning that θ.  This is │
+# │             the mode that reproduces the analysis.                         │
 # │                                                                            │
-# │ all         Regenerate EVERYTHING from the constraints down.  This will    │
-# │             not reproduce the published vectors — see "Determinism" in     │
-# │             README.md — so α will shift slightly.  Use this if the paper   │
-# │             needs to claim the pipeline reproduces end to end.             │
+# │ all         Also regenerate the committees.  This will NOT give the same   │
+# │             parameters — committee members are not reproducible run to run │
+# │             (see "Determinism" in README.md) — so α will shift.  Only for   │
+# │             claiming end-to-end reproducibility, and only after            │
+# │             verify-determinism comes back clean.                           │
 # └────────────────────────────────────────────────────────────────────────────┘
 #
 #   constrain            stage 1 only  — build both committees
@@ -21,7 +22,7 @@
 #   figure-repro         stage 3 only  — replot from THIS run's output (use after `all`)
 #   compare-published    how far did regenerating the committee move the answer?
 #   all                  1 → 2 → 3, chained with SLURM dependencies
-#   published            stage 2 → 3 against the published committees
+#   reproduce            NPT on the saved θ (no committee) — the reproduction path
 #   verify-determinism   run stage 1 twice into separate dirs and compare
 #
 # Env:  REPO (repo root)   RHO_INTERVAL (pinned OSQP rho schedule, default 25)
@@ -82,15 +83,57 @@ md)
     submit "$HERE/run_npt_unconstrained_naive_worst.slurm"
   ;;
 
-published)
-  echo "── stage 2 → 3 against the PUBLISHED committees ────────────────────"
-  echo "    aborts unless the selected members are byte-identical to the published ones"
-  COMMITTEE_DIR="$RES/bandpath_undotted_multivolume" \
-    submit "$HERE/run_npt_constrained_softest.slurm"
-  COMMITTEE_DIR="$RES/bandpath_undotted" \
-    submit "$HERE/run_npt_unconstrained_naive_worst.slurm"
+reproduce|published)
+  # No committee is built or read.  Each driver loads the θ the published run saved
+  # beside its own outputs -- that is its THETA_FILE default -- so this reruns the exact
+  # parameter vectors behind the figure.
+  echo "── rerun the NPT on the SAVED parameter vectors ────────────────────"
+  for f in "$RES/npt_thermal_expansion_naive_worst_member/theta_naive_worst.csv" \
+           "$RES/npt_multivolume_softest/theta_used.csv"; do
+    [ -f "$f" ] || { echo "    MISSING $f"; exit 1; }
+    echo "    θ: $f"
+  done
+  J1=$(submit "$HERE/run_npt_constrained_softest.slurm")
+  J2=$(submit "$HERE/run_npt_unconstrained_naive_worst.slurm")
+  echo "    constrained MD   : job $J1 → results/repro_npt_multivolume_softest/"
+  echo "    unconstrained MD : job $J2 → results/repro_npt_thermal_expansion_naive_worst_member/"
   echo
-  echo "Then:  bash npt_trajectories/run_pipeline.sh figure"
+  echo "When both finish:"
+  echo "    bash npt_trajectories/run_pipeline.sh figure-repro       # plot the rerun"
+  echo "    bash npt_trajectories/run_pipeline.sh compare-reproduced # rerun vs published a(T)"
+  ;;
+
+compare-reproduced)
+  # Same θ, same settings, different RNG stream draw order in Molly -> the trajectories
+  # are not bit-identical, so what matters is whether a(T) and α agree within the
+  # fluctuation width already quoted as the error bars.
+  echo "── reproduced vs published a(T) ────────────────────────────────────"
+  julia --project="$REPO" -e '
+    using DelimitedFiles, Printf
+    R = ARGS[1]
+    for (lab, pub, rep) in (("constrained",   "npt_multivolume_softest",
+                                              "repro_npt_multivolume_softest"),
+                            ("unconstrained", "npt_thermal_expansion_naive_worst_member",
+                                              "repro_npt_thermal_expansion_naive_worst_member"))
+        pa = joinpath(R, pub, "thermal_expansion_summary.csv")
+        pb = joinpath(R, rep, "thermal_expansion_summary.csv")
+        if !isfile(pb); @printf("%-14s rerun not finished yet
+", lab); continue; end
+        rd(p) = (ls = readlines(p); n = count(l -> startswith(l, "#"), ls);
+                 readdlm(p, Char(0x2c); skipstart = n + 1))
+        a = rd(pa); b = rd(pb)
+        println("
+", lab, "   T_K     published      rerun         diff     (sd of the rerun)")
+        for i in 1:min(size(a,1), size(b,1))
+            @printf("  %13.0f  %10.6f  %10.6f  %+9.6f   %8.6f
+",
+                    a[i,1], a[i,2], b[i,2], b[i,2] - a[i,2], b[i,3])
+        end
+    end
+    println("
+Same θ and settings, but Molly draws a fresh Langevin/barostat stream, so")
+    println("these are independent samples of the same ensemble, not bit-identical runs.")
+    println("Agreement within the quoted sd is the correct expectation.")' "$RES"
   ;;
 
 figure)

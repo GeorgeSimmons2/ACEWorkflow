@@ -93,6 +93,27 @@ a_mean = ACEWorkflow.relax_lattice_constant(model, element)
 @printf("Mean-model a = %.5f Å  (ranking geometry)\n", a_mean)
 bp_mean = bandpath_Dk(result, model, element, a_mean, N_cell_fc; N_per_seg=N_per_seg)
 
+# [REPRO] THETA_FILE runs a SAVED parameter vector directly, skipping BOTH the POPS
+# forest re-derivation and the constrained-committee read.  This is the reproduction
+# path — rerunning the published trajectory means rerunning the published θ.  It also
+# drops the before/after phonon panel and the constrained fields of the summary header,
+# since those describe a committee this path never loads.
+THETA_FILE = get(ENV, "THETA_FILE",
+                 "$(result.dir)/results/npt_thermal_expansion_naive_worst_member/theta_naive_worst.csv")
+USE_SAVED  = !isempty(THETA_FILE)
+
+if USE_SAVED
+    isfile(THETA_FILE) || error("THETA_FILE=$THETA_FILE does not exist")
+    θ_naive_worst = vec(readdlm(THETA_FILE, ','))
+    length(θ_naive_worst) == n_params ||
+        error("θ has $(length(θ_naive_worst)) entries, expected $n_params")
+    minω_nw = min_freq_stable(θ_naive_worst, bp_mean)
+    θ_con_soft = nothing; minω_cs = NaN; con_label = "NA"
+    @printf("\nθ from saved vector: %s\n  min ω at a_mean = %+.3f THz  (no committee needed)\n",
+            THETA_FILE, minω_nw)
+    writedlm("$outdir/theta_naive_worst.csv", θ_naive_worst, ',')
+else
+
 # ── "before": worst UNCONSTRAINED member of the original 30-draw ─────────────
 C = Symmetric(Ap'*Ap .+ λ.*(P'*P)); Cf = cholesky(C)
 AtX = Cf\Matrix(Ap'); θ̃ = Cf\(Ap'*Yw)
@@ -150,6 +171,9 @@ let bnw = bands(θ_naive_worst, bp_mean), bcs = bands(θ_con_soft, bp_mean)
            framevisible=true, labelsize=8, patchsize=(16,10))
     save("$outdir/bands_before_after_constraining.pdf", fig); save("$outdir/bands_before_after_constraining.png", fig; px_per_unit=4)
 end
+con_label = "$(con_src[js])[$(con_row[js])]"   # [REPRO] captured so the header works either way
+
+end   # [REPRO] end of the derive-from-committee branch
 
 # ── choose the NPT member ────────────────────────────────────────────────────
 θ_npt, npt_label = npt_vector == :worst_naive ? (θ_naive_worst, "naive-worst") : (θ_con_soft, "constrained-softest")
@@ -159,7 +183,9 @@ end
 # next to its outputs, so check against it: if the upstream committee has changed, this
 # run would produce a different trajectory from the one the figure uses.
 let ref = get(ENV, "THETA_REF", "$(result.dir)/results/npt_thermal_expansion_naive_worst_member/theta_naive_worst.csv")
-    if ref == "none"
+    if USE_SAVED && abspath(THETA_FILE) == abspath(ref)
+        println("REPRO CHECK: trivially satisfied — θ was loaded from the reference file itself")
+    elseif ref == "none"
         println("REPRO CHECK: skipped (THETA_REF=none) — running a freshly generated member")
     elseif isfile(ref) && npt_vector == :worst_naive
         θ_ref = vec(readdlm(ref, ','))
@@ -313,6 +339,14 @@ end
 equil_frames = div(n_equil, log_every)
 N_super      = supercell[1]
 a_of_T = Float64[]; a_of_T_std = Float64[]; minω_of_T = Float64[]; bands_hi = nothing; a_hi = a0
+# [REPRO] Re-seed immediately before the sweep.  Everything above this line consumes a
+# different number of random draws depending on how θ was obtained — the saved-θ path
+# skips the forest re-derivation, which itself calls rand() — so without this the
+# Langevin/barostat stream would depend on the selection route.  Re-seeding here makes
+# the MD depend only on MD_SEED, so two `reproduce` runs give identical trajectories.
+# It does NOT bit-match the original published run, whose stream started from a
+# different point; agreement there is statistical, within the quoted fluctuation width.
+Random.seed!(parse(Int, get(ENV, "MD_SEED", "1234")))
 println("\n── NPT sweep (0 Pa) on $npt_label from a₀ = $(round(a0;digits=5)) Å ─────────────")
 for (ti, T_K) in enumerate(temperatures_K)
     global bands_hi, a_hi
@@ -405,7 +439,8 @@ end
 
 # ── summary table ────────────────────────────────────────────────────────────
 open("$outdir/thermal_expansion_summary.csv", "w") do io
-    println(io, "# npt_member=$npt_label  naive_worst_minomega=$(round(minω_nw;digits=4))  con_soft_minomega=$(round(minω_cs;digits=4))  con_soft_source=$(con_src[js])[$(con_row[js])]")
+    println(io, "# npt_member=$npt_label  naive_worst_minomega=$(round(minω_nw;digits=4))  con_soft_minomega=$(isnan(minω_cs) ? "NA" : string(round(minω_cs;digits=4)))  con_soft_source=$con_label" *
+                (USE_SAVED ? "  theta_source=$THETA_FILE" : ""))
     println(io, "T_K,a_Ang,a_std_Ang,delta_a_over_a0_pct,min_omega_THz")
     @printf(io, "0,%.6f,0,0,%.4f\n", a0, minω_a0)
     for (T, a, s, ω) in zip(temperatures_K, a_of_T, a_of_T_std, minω_of_T)
