@@ -17,7 +17,9 @@
 #
 #   constrain            stage 1 only  — build both committees
 #   md                   stage 2 only  — NPT on freshly built committees
-#   figure               stage 3 only  — replot from the summary CSVs (local, seconds)
+#   figure               stage 3 only  — replot from the PUBLISHED summaries (local)
+#   figure-repro         stage 3 only  — replot from THIS run's output (use after `all`)
+#   compare-published    how far did regenerating the committee move the answer?
 #   all                  1 → 2 → 3, chained with SLURM dependencies
 #   published            stage 2 → 3 against the published committees
 #   verify-determinism   run stage 1 twice into separate dirs and compare
@@ -63,9 +65,12 @@ all)
   echo "    constrained MD   : job $JM1"
   echo "    unconstrained MD : job $JM2"
   echo
-  echo "Stage 3 is local.  Once those finish, point it at the fresh outputs:"
-  echo "    bash npt_trajectories/run_pipeline.sh figure"
-  echo "  (set RESDIR if you want the figure built from the repro_* directories)"
+  echo "Stage 3 is local.  Once those finish:"
+  echo "    bash npt_trajectories/run_pipeline.sh figure-repro       # plot THIS run"
+  echo "    bash npt_trajectories/run_pipeline.sh compare-published  # how far did it move?"
+  echo
+  echo "NOTE: plain \`figure\` still plots the PUBLISHED summaries.  This run writes to"
+  echo "      repro_* directories and does not touch them."
   ;;
 
 md)
@@ -89,9 +94,51 @@ published)
   ;;
 
 figure)
-  echo "── stage 3: figure ─────────────────────────────────────────────────"
+  echo "── stage 3: figure, from the PUBLISHED summaries ───────────────────"
   RESDIR=${RESDIR:-$RES} julia --project="$REPO" \
     "$REPO/thermal_expansion_vs_experiment/plot_thermal_expansion_vs_experiment.jl"
+  ;;
+
+figure-repro)
+  # `all` writes to repro_* leaf names, which differ from the published ones, so the
+  # plotter has to be pointed at them explicitly -- RESDIR alone will not do it.
+  echo "── stage 3: figure, from THIS pipeline run's output ────────────────"
+  for d in "$RES/repro_npt_thermal_expansion_naive_worst_member" "$RES/repro_npt_multivolume_softest"; do
+    [ -f "$d/thermal_expansion_summary.csv" ] || {
+      echo "    missing $d/thermal_expansion_summary.csv"
+      echo "    stage 2 has not finished -- check squeue"; exit 1; }
+  done
+  DIR_UNCON="$RES/repro_npt_thermal_expansion_naive_worst_member" \
+  DIR_CON="$RES/repro_npt_multivolume_softest" \
+  OUT=${OUT:-"$REPO/thermal_expansion_vs_experiment/thermal_expansion_aT_vs_experiment_repro"} \
+    julia --project="$REPO" \
+    "$REPO/thermal_expansion_vs_experiment/plot_thermal_expansion_vs_experiment.jl"
+  ;;
+
+compare-published)
+  # How far did regenerating the committee move the answer?  Members are not
+  # reproducible, so this is the number that says whether that matters.
+  echo "── fresh committee vs published ────────────────────────────────────"
+  julia --project="$REPO" -e '
+    using DelimitedFiles, Printf
+    R = ARGS[1]
+    pairs = [("committee (softest member)", "bandpath_undotted_multivolume/theta_npt_softest.csv",
+                                            "repro_bandpath_undotted_multivolume/theta_npt_softest.csv"),
+             ("committee (mean model)",     "bandpath_undotted_multivolume/theta_mean.csv",
+                                            "repro_bandpath_undotted_multivolume/theta_mean.csv")]
+    for (lab, a, b) in pairs
+        pa = joinpath(R, a); pb = joinpath(R, b)
+        (isfile(pa) && isfile(pb)) || (@printf("%-28s not available yet\n", lab); continue)
+        x = readdlm(pa, Char(0x2c)); y = readdlm(pb, Char(0x2c))
+        @printf("%-28s max |d| = %.4e\n", lab, maximum(abs.(x .- y)))
+    end
+    for (lab, a, b) in [("alpha / a(T) summary", "npt_multivolume_softest", "repro_npt_multivolume_softest")]
+        pa = joinpath(R, a, "thermal_expansion_summary.csv")
+        pb = joinpath(R, b, "thermal_expansion_summary.csv")
+        (isfile(pa) && isfile(pb)) || (@printf("%-28s not available yet\n", lab); continue)
+        println("\n-- published --");   print(read(pa, String))
+        println("-- regenerated --"); print(read(pb, String))
+    end' "$RES"
   ;;
 
 verify-determinism)

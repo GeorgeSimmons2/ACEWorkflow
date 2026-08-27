@@ -69,6 +69,7 @@
 #   FIGW 380   ASPECT 0.82   WIN overlap|common|native   FIT_MIN 0   FIT_MAX 700
 #   KX_TO_ANG 1.00202
 #   RESDIR  models/Al_12_4_6A_2_/results   WILSON  the transcribed table
+#   DIR_UNCON / DIR_CON  per-series output dirs (override to plot a pipeline rerun)
 #   OUT  thermal_expansion_vs_experiment/thermal_expansion_aT_vs_experiment
 
 using DelimitedFiles, Printf, Statistics, CairoMakie
@@ -161,8 +162,13 @@ function fit_alpha(T, a, keep)
 end
 
 # ── assemble the three series ───────────────────────────────────────────────
-un_cols, un_flags, un_meta = read_summary("$RESDIR/npt_thermal_expansion_naive_worst_member/thermal_expansion_summary.csv")
-co_cols, co_flags, co_meta = read_summary("$RESDIR/npt_multivolume_softest/thermal_expansion_summary.csv")
+# Per-series directories, not just RESDIR: a pipeline rerun writes to repro_* leaf names
+# that differ from the published ones, so RESDIR alone cannot redirect the figure at it.
+DIR_UNCON = get(ENV, "DIR_UNCON", "$RESDIR/npt_thermal_expansion_naive_worst_member")
+DIR_CON   = get(ENV, "DIR_CON",   "$RESDIR/npt_multivolume_softest")
+@printf("unconstrained ← %s\nconstrained   ← %s\n", DIR_UNCON, DIR_CON)
+un_cols, un_flags, un_meta = read_summary("$DIR_UNCON/thermal_expansion_summary.csv")
+co_cols, co_flags, co_meta = read_summary("$DIR_CON/thermal_expansion_summary.csv")
 w = read_wilson(WILSON)
 
 @printf("kX → Å conversion: ×%.5f\n", KX_TO_ANG)
