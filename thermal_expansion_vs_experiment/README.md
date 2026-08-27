@@ -21,6 +21,28 @@ To regenerate those trajectories from scratch, see **`../npt_trajectories/`**, w
 holds pinned copies of the two NPT drivers. Pinned because the working copies in
 `scripts/uq/` have since been repurposed and no longer reproduce these runs.
 
+## The structural companion figure
+
+`fcc_compare_constrained_vs_naive.jl` (copied from `scripts/uq/fcc_compare_figure_Al_12_4_6A_2.jl`)
+reads the **same two NPT runs** and answers what a(T) alone cannot: was the lattice still
+FCC when a(T) was measured? Phonon bands of both members at their own a(T) on the left,
+their RDFs stacked on the right.
+
+```bash
+julia --project -t 8 thermal_expansion_vs_experiment/fcc_compare_constrained_vs_naive.jl [T]
+```
+
+At 300 K: constrained min ω **+0.324 THz** at a = 4.07786 Å, unconstrained **−11.368 THz**
+at a = 4.16664 Å. It honours the same `DIR_UNCON` / `DIR_CON` variables as the a(T)
+plotter, so one pair of settings drives both figures, and it takes θ for the constrained
+arm from that run's own `theta_used.csv` (byte-identical to the committee's copy, max
+|Δ| = 0.0, but with no committee dependency).
+
+**It writes to the published stem by default**, i.e. a plain rerun overwrites
+`models/Al_12_4_6A_2_/results/fcc_compare_constrained_vs_naive_300K.{pdf,png}` in place.
+That is deliberate — it keeps existing `\includegraphics` resolving — but set `OUT` if
+you want the published file untouched.
+
 ## The experimental data needs a unit conversion, and it matters
 
 `wilson_1941_aluminium.csv` is Wilson's table from p. 240 of the paper (ten points,
