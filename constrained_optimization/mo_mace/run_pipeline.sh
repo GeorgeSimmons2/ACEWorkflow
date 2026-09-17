@@ -11,3 +11,4 @@ export REPO
 "$PY" "$HERE/01_build_design_and_constraints.py"
 julia --project="$REPO" "$HERE/02_constrained_readout_qp.jl"
 "$PY" "$HERE/03_verify_corrected_model.py"
+"$PY" "$HERE/04_before_after.py"
