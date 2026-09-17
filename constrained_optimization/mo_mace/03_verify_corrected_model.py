@@ -12,10 +12,12 @@ patched model itself:
      the honest check that the readout change has not damaged them
 
 Saves the patched models as $OUTDIR/mace_mpa0_mo_<fit>.model (loadable with
-mace.calculators.MACECalculator(model_paths=..., default_dtype="float64")).
+mace.calculators.MACECalculator(model_paths=..., default_dtype="float64")).  With
+DESCRIPTOR=perez the pickle contains lib_mace_readout.LinearCorrectedReadout, so this
+directory must be on sys.path/PYTHONPATH when loading it.
 
 Run:  python/mace_venv/bin/python constrained_optimization/mo_mace/03_verify_corrected_model.py
-Env:  REPO OUTDIR  FITS (comma list from offset,ridge,constrained; default all)  STRAIN_H
+Env:  REPO OUTDIR DESCRIPTOR  FITS (comma list from offset,ridge,constrained; default all)  STRAIN_H
 """
 
 import os
@@ -29,7 +31,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib_mace_readout as L  # noqa: E402
 
 REPO = os.environ.get("REPO", "/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow")
-OUTDIR = os.environ.get("OUTDIR", os.path.join(REPO, "models", "Mo_MACE_MPA0_readout"))
+MODE = L.descriptor_mode()
+OUTDIR = os.environ.get("OUTDIR", os.path.join(REPO, "models", "Mo_MACE_MPA0_readout", MODE))
 FITS = os.environ.get("FITS", "offset,ridge,constrained").split(",")
 H = float(os.environ.get("STRAIN_H", 0.005))
 
@@ -41,7 +44,6 @@ A0 = float(meta["A0"][1])
 
 calc = L.load_calc()
 base_model = calc.models[0]
-hooks = L.ReadoutHooks(base_model)
 data = {s: read(os.path.join(REPO, "data", "Mo", f"mlearn_Mo_{s}.extxyz"), ":") for s in ("train", "test")}
 D_test = np.loadtxt(os.path.join(OUTDIR, "D_test.csv"), delimiter=",")
 E_test = np.loadtxt(os.path.join(OUTDIR, "E_test.csv"), delimiter=",")
@@ -83,7 +85,7 @@ for fit in FITS:
 print("\nfit            identity   C11      C12      C44    σ@A0  |  a_relax  C11      C12      C44"
       "  |  E rmse tr/te (meV/at)  F rmse tr/te (meV/Å)")
 for name, model, dtheta in rows:
-    model = model if model is not None else L.apply_correction(base_model, dtheta)
+    model = model if model is not None else L.apply_correction(base_model, dtheta, MODE)
     calc.models[0] = model
     try:
         ident = 0.0

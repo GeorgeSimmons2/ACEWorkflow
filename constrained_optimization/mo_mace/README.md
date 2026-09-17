@@ -1,44 +1,80 @@
 # Constrain Mo elastics in MACE-MPA-0 (`Constrain_Mb_Elastics.pdf`)
 
-Readout-only correction of MACE-MPA-0 for Mo. The message-passing layers stay frozen, and a
-correction δΘ to the readout is fitted to Mo DFT energies by least squares, subject to linear
-constraints that put C11, C12 and C44 in experimental windows.
+A linear corrector on the MACE-MPA-0 readout descriptors, as in Perez et al., npj Comput.
+Mater. 11, 263 (2025), §III.G, Eq. 10. The corrector is fitted to Mo DFT energies subject to
+linear constraints that put C11, C12 and C44 in experimental windows.
 
-## Plan → implementation
+## Maths
 
-| Spec | Where | How |
-|---|---|---|
-| NN part is the basis, readout parameters are learned (Perez et al. 2025) | `lib_mace_readout.py` | ScaleShiftMACE: `E = ΣE0 + Σ_atoms[scale·(pair + w₀·x₀ + w₁·x₁) + shift]`. Hooks read `x₀` (128 scalar node features into `readouts[0].linear`) and `x₁` (16 post-activation hidden units into `readouts[1].linear_2`). `D = Σ_atoms[x₀, x₁, 1]` has 145 columns and `E_MACE = E_frozen + D·Θ₀` **exactly**. This is checked on real configs in step 01. |
-| Eq. (2): `E_DFT − E_MACE − Θ·D` | `01_…py`, `02_…jl` | Per-atom rows. `δΘ` is fitted to the MACE residual, so δΘ = 0 is MACE-MPA-0. |
-| Eq. (3): `C_exp < ∂²(D·Θ)/∂ε_i∂ε_j < C_exp` | `01_…py` | `∂²D/∂ε²` by central finite differences on the 2-atom BCC cell (no internal relaxation is needed in BCC). Rows are `(160.2/V)∂²D`, in GPa. The window is `C_exp(1 ± REL_TOL)`. There is also a stress row `|∂E/∂ε₁|/V ≤ P_TOL`, so that A0 stays the equilibrium lattice and the constrained C_ij are equilibrium C_ij. |
-| Eq. (1) with OSQP.jl | `02_…jl` | QP in θ̃ = S δΘ (S is the column std) with ridge λ. The offset column is left unpenalised. `eps_abs = eps_rel = 1e-9` with polish (the loose defaults made the W QP irreproducible). Offset-only, ridge and constrained fits are reported side by side. |
-| Does it actually work | `03_…py` | Writes δΘ into the readout weights and recomputes everything from the patched model: energy identity, C_ij at A0 and at the patched model's own relaxed a, and energy **and force** RMSE (forces are not in the fit). Saves `.model` files. |
+The corrected model is `E(δΘ) = E_MACE-MPA-0 + D·δΘ`, and D is summed over atoms.
 
-## Choices the spec leaves open (change via env)
+- **`DESCRIPTOR=perez` (default):** `D = Σ[h⁰(0e), h¹, 1]`, 257 columns. This is the scalar
+  input to the readout layer, the 128 + 128 = 256-dimensional D of Perez Eq. 10, plus a per-atom
+  offset. It is realised by patching `readouts[0].linear` and wrapping `readouts[1]` with an
+  added linear term.
+- **`DESCRIPTOR=readout`:** `D = Σ[h⁰(0e), σ(W h¹), 1]`, 145 columns. This is the input to the
+  last linear map of each readout, so δΘ just changes the existing readout weights. It is less
+  expressive (16 layer-1 directions, not 128).
+
+The loss is `(1/2n) Σ ((E_DFT − E_MACE − D·δΘ)/N)² + (λ/2)‖S δΘ‖²`. That is Eq. (2) with per-atom
+rows, plus a ridge term towards the foundation model (δΘ = 0). It is solved in θ̃ = S δΘ, where
+S is the column std. The offset column is left unpenalised: it absorbs the difference between
+the DFT set's PBE reference and MPtrj's.
+
+The constraints are Eq. (3), written for the corrected model per unit volume at a BCC lattice
+constant A0:
+
+```
+C_exp(1−tol) ≤ C_MACE + (160.2/V) ∂²D/∂ε_i∂ε_j · δΘ ≤ C_exp(1+tol)    (C11, C12, C44)
+|∂E_MACE/∂ε₁ + ∂D/∂ε₁ · δΘ| / V ≤ P_TOL                                (zero stress)
+```
+
+- `C_ij = V⁻¹ ∂²E/∂ε_i∂ε_j` with `F = I + ε` equals the stress–strain elastic constants only at
+  zero stress, so the stress row is required. It also stops the correction moving the
+  equilibrium lattice away from A0.
+- Voigt ε₄ = 2ε_yz. BCC is a Bravais lattice, so there is no internal relaxation.
+- MPA-0's ZBL pair term is active for Mo: its cutoff is 2·r_cov = 3.08 Å and the nearest
+  neighbour is at 2.73 Å. It is frozen, so it lives in E_MACE and C_MACE, never in D.
+
+Exactness checks, all asserted:
+
+- **Step 01:** a random δΘ written into the model reproduces `E_MACE + D·δΘ` on real configs.
+  It also reproduces the strain derivatives, `∂E_patched = ∂E_MACE + ∂D·δΘ`.
+- **Step 03:** the fitted δΘ is checked the same way, then C_ij, relaxed a, and energy and force
+  RMSE are recomputed from the patched model itself. Forces are not in the fit.
+
+## Choices the spec leaves open (all env vars)
 
 - **DFT data:** the mlearn Mo set (Zuo et al., JPCA 124, 731 (2020); PBE; 194 train / 23 test;
-  Elastic / AIMD / Vacancy / Surface). Its PBE reference differs from MPtrj's by a
-  constant per atom, which the constant column absorbs.
-- **Experimental targets:** C11/C12/C44 = 464.7/161.5/108.9 GPa, a₀ = 3.147 Å. These are the
-  experimental values commonly quoted alongside the Mo potentials compared in Smirnova et al. 2020.
-  **Check them against that paper's table** and override with `C11= C12= C44=`.
-- **Where the constraint sits:** `A0=mace` (default) uses MACE-MPA-0's own relaxed a;
-  `A0=exp` uses 3.147 Å, and the stress row then pulls the lattice constant there too.
-- `REL_TOL=0.01`, `P_TOL=0.1` GPa, `STRAIN_H=0.005`, `LAMBDA=1e-4` (run step 02 with `SCAN=1`
-  to see the λ scan).
-- **Model:** `medium-mpa-0` (the model named in Eq. 2).
+  Elastic / AIMD / Vacancy / Surface).
+- **Experimental C_ij:** the spec says to take them from Smirnova et al. 2020, but I couldn't
+  access it. The defaults are Dickinson & Armstrong 1967 at 273 K, **463.7/157.8/109.2 GPa**, as
+  tabulated in Dal Corso, arXiv:2406.16634, Table II. The 0 K extrapolation there is
+  480.0/155.8/112.4 GPa. MACE is a static 0 K model, and the 273 K→0 K shift (~3% on C11) is
+  larger than `REL_TOL=0.01`. **Check against Smirnova's table** and set `C11= C12= C44=`.
+- **A0:** `A0=mace` (default) is MPA-0's relaxed a. `A0=exp` is 3.147 Å (room temperature).
+- **Other defaults:** `REL_TOL=0.01`, `P_TOL=0.1` GPa, `STRAIN_H=0.005`, `LAMBDA=1e-4`.
+  `SCAN=1` prints a λ scan.
+- **Known tension:** PBE itself gets C44 ≈ 9% below experiment (Dal Corso). A fit to PBE energies
+  therefore competes with the experimental constraint, which shows up in the ridge-vs-constrained
+  RMSE.
 
 ## Run
 
 ```bash
 cd /storage/astro2/phupfb/PhD/acestuff/ACEWorkflow
-# one-off environment (CPU torch + mace-torch 0.3.16; python/ is gitignored)
+sbatch constrained_optimization/mo_mace/run_pipeline.slurm            # DESCRIPTOR=perez
+sbatch --export=ALL,DESCRIPTOR=readout constrained_optimization/mo_mace/run_pipeline.slurm
+```
+
+The environment (`python/mace_venv`, gitignored) was built with:
+
+```bash
 python3 -m venv python/mace_venv
 python/mace_venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
 python/mace_venv/bin/pip install mace-torch ase
-
-bash constrained_optimization/mo_mace/run_pipeline.sh
 ```
 
-Outputs are in `models/Mo_MACE_MPA0_readout/`: design and constraint CSVs,
-`delta_theta_{offset,ridge,constrained}.csv` and `mace_mpa0_mo_{…}.model`.
+Outputs go to `models/Mo_MACE_MPA0_readout/<DESCRIPTOR>/`: design and constraint CSVs,
+`delta_theta_{offset,ridge,constrained}.csv` and `mace_mpa0_mo_{…}.model`. Loading a `perez`
+model needs this directory on `PYTHONPATH`.

@@ -1,32 +1,50 @@
 """
-lib_mace_readout.py — MACE-MPA-0 readout as a linear basis (Constrain_Mb_Elastics.pdf).
+lib_mace_readout.py — MACE-MPA-0 readout descriptors as a linear basis (Constrain_Mb_Elastics.pdf).
 
 ScaleShiftMACE assembles the energy as (mace/modules/models.py)
 
-    E = Σ_atoms E0(Z) + Σ_atoms [ scale·( pair + r_0(h⁰) + r_1(h¹) ) + shift ]
+    E = Σ_atoms E0(Z) + Σ_atoms [ scale·( ZBL pair + r_0(h⁰) + r_1(h¹) ) + shift ]
 
-    r_0 = LinearReadoutBlock:    w₀ · x₀,   x₀ = 0e channels of the layer-0 node features (128)
-    r_1 = NonLinearReadoutBlock: w₁ · x₁,   x₁ = σ(linear_1(h¹))                         (16)
+    r_0 = LinearReadoutBlock     = w₀ · h⁰[0e]            (128 scalars of layer 0)
+    r_1 = NonLinearReadoutBlock  = w₁ · σ(W h¹)           (h¹: 128 scalars of layer 1; σ(W h¹): 16)
 
-Everything upstream of w₀, w₁ and shift is frozen, so with
+Two descriptor choices, both exactly linear in δΘ:
 
-    D = Σ_atoms [ x₀ , x₁ , 1 ]                                  (145 columns)
-    Θ₀ = [ scale·w₀_eff , scale·w₁_eff , shift ]
+  DESCRIPTOR=perez   (default)  D = Σ_atoms [ h⁰[0e], h¹, 1 ]            257 columns
+      The scalar INPUT to the readout layer, as in Perez et al., npj Comput. Mater. 11, 263
+      (2025), §III.G / Eq. (10) (D_i ∈ R²⁵⁶ for MACE-MPA-0) — the spec's Eq. (2).  The
+      correction E_MACE + D·δΘ is an additive linear corrector; the h¹ part is realised by
+      wrapping readouts[1] (LinearCorrectedReadout).
 
-E_MACE = E_frozen + D·Θ₀ exactly, and a readout correction δΘ gives E_MACE + D·δΘ
-(Eq. 2 of the spec).  `w_eff` is the e3nn Linear's weight times its path normalisation;
-it is probed numerically, never assumed.  `check_linear_identity` verifies the identity.
+  DESCRIPTOR=readout             D = Σ_atoms [ h⁰[0e], σ(W h¹), 1 ]       145 columns
+      The input to the LAST linear map of each readout: δΘ is a pure change of the existing
+      readout weights (w₀, w₁, shift).  Less expressive (16 layer-1 directions, not 128).
+
+The trailing 1 is a per-atom constant (added to scale_shift.shift); it absorbs the
+difference between the DFT set's PBE reference and MPtrj's.  It is not in Perez Eq. (10).
+
+The ZBL pair term is live for Mo (cutoff 2·r_cov = 3.08 Å > NN 2.73 Å) and is frozen: it is
+part of E_MACE and of C_MACE, never of D.
 
 Strain convention: cell' = cell·(I + ε)ᵀ with ε symmetric, Voigt ε₄ = 2ε_yz etc.
 C_ij = (1/V₀) ∂²E/∂ε_i∂ε_j at zero stress.  1 eV/Å³ = 160.21766 GPa.
 """
 
 import copy
+import os
+
 import numpy as np
 import torch
 from ase.build import bulk
 
 EV_A3_TO_GPA = 160.21766208
+MODES = ("perez", "readout")
+
+
+def descriptor_mode():
+    mode = os.environ.get("DESCRIPTOR", "perez")
+    assert mode in MODES, f"DESCRIPTOR must be one of {MODES}, got {mode}"
+    return mode
 
 
 # ── model ────────────────────────────────────────────────────────────────────
@@ -35,61 +53,53 @@ def load_calc(model="medium-mpa-0", device="cpu"):
     return mace_mp(model=model, default_dtype="float64", device=device)
 
 
-def load_calc_from_file(path, device="cpu"):
-    from mace.calculators import MACECalculator
-    return MACECalculator(model_paths=path, device=device, default_dtype="float64")
-
-
-def _readout_layers(model):
+def _readouts(model):
     ro = model.readouts
     assert len(ro) == 2, f"expected 2 readouts, got {len(ro)}"
     assert hasattr(ro[0], "linear") and hasattr(ro[1], "linear_2"), "unexpected readout blocks"
     assert len(getattr(model, "heads", ["default"])) == 1, "multi-head model not supported"
-    return ro[0].linear, ro[1].linear_2
+    n0 = ro[0].linear.irreps_in.count("0e")
+    assert str(ro[0].linear.irreps_in).startswith(f"{n0}x0e"), ro[0].linear.irreps_in
+    nh = ro[1].linear_1.irreps_in.dim
+    assert ro[1].linear_1.irreps_in.count("0e") == nh, "layer-1 readout input must be scalars"
+    n1 = ro[1].linear_2.irreps_in.dim
+    return ro, n0, nh, n1
 
 
-def feature_dims(model):
-    lin0, lin2 = _readout_layers(model)
-    n0 = lin0.irreps_in.count("0e")
-    n1 = lin2.irreps_in.count("0e")
-    # the 0e block must come first in lin0's input so x[:, :n0] are the scalars
-    assert str(lin0.irreps_in).startswith(f"{n0}x0e"), lin0.irreps_in
-    assert lin2.irreps_in.dim == n1
-    return n0, n1
+def n_columns(model, mode):
+    _, n0, nh, n1 = _readouts(model)
+    return n0 + (nh if mode == "perez" else n1) + 1
 
 
-def effective_weights(model):
-    """w_eff such that Linear(x) = w_eff · x[:, :n] (probed with unit vectors)."""
-    lin0, lin2 = _readout_layers(model)
-    out = []
-    for lin in (lin0, lin2):
-        n = lin.irreps_in.count("0e")
-        X = torch.zeros(n, lin.irreps_in.dim, dtype=torch.float64)
-        X[:, :n] = torch.eye(n, dtype=torch.float64)
-        with torch.no_grad():
-            out.append(lin(X).reshape(n, -1)[:, 0].clone())
-    return out
+def _probe(lin, n):
+    """w_eff such that lin(x) = w_eff · x[:, :n] (unit-vector probe)."""
+    X = torch.zeros(n, lin.irreps_in.dim, dtype=torch.float64)
+    X[:, :n] = torch.eye(n, dtype=torch.float64)
+    with torch.no_grad():
+        return lin(X).reshape(n, -1)[:, 0].clone()
 
 
 def theta0(model):
-    w0, w1 = effective_weights(model)
+    """Current Θ₀ for DESCRIPTOR=readout (E_MACE = E_frozen + D·Θ₀)."""
+    ro, n0, _, n1 = _readouts(model)
     scale = float(model.scale_shift.scale.reshape(-1)[0])
     shift = float(model.scale_shift.shift.reshape(-1)[0])
-    return np.concatenate([scale * w0.numpy(), scale * w1.numpy(), [shift]])
+    return np.concatenate([scale * _probe(ro[0].linear, n0).numpy(),
+                           scale * _probe(ro[1].linear_2, n1).numpy(), [shift]])
 
 
 # ── descriptors ──────────────────────────────────────────────────────────────
 class ReadoutHooks:
-    """Captures the inputs of the two final readout linears during a MACE forward."""
+    """Captures h⁰[0e], h¹ and σ(W h¹) during a MACE forward."""
 
-    def __init__(self, model):
-        self.model = model
-        self.n0, self.n1 = feature_dims(model)
-        lin0, lin2 = _readout_layers(model)
+    def __init__(self, model, mode):
+        self.mode = mode
+        ro, self.n0, self.nh, self.n1 = _readouts(model)
         self.buf = {}
         self.handles = [
-            lin0.register_forward_pre_hook(self._grab("x0")),
-            lin2.register_forward_pre_hook(self._grab("x1")),
+            ro[0].register_forward_pre_hook(self._grab("h0")),
+            ro[1].register_forward_pre_hook(self._grab("h1")),
+            ro[1].linear_2.register_forward_pre_hook(self._grab("x1")),
         ]
 
     def _grab(self, key):
@@ -103,35 +113,55 @@ class ReadoutHooks:
 
 
 def energy_and_descriptor(calc, atoms, hooks):
-    """E_MACE (eV) and D = Σ_atoms [x₀, x₁, 1] for one structure."""
+    """E_MACE (eV) and D (summed over atoms) for one structure."""
     at = atoms.copy()
     at.calc = calc
     hooks.buf.clear()
     E = at.get_potential_energy()
-    x0 = hooks.buf["x0"][:, : hooks.n0].sum(0).numpy()
-    x1 = hooks.buf["x1"].sum(0).numpy()
-    return E, np.concatenate([x0, x1, [len(at)]])
+    h0 = hooks.buf["h0"][:, : hooks.n0].sum(0).numpy()
+    last = hooks.buf["h1"] if hooks.mode == "perez" else hooks.buf["x1"]
+    return E, np.concatenate([h0, last.sum(0).numpy(), [len(at)]])
 
 
-def check_linear_identity(calc, atoms, hooks, th0=None):
-    """E_MACE − D·Θ₀ must equal E with the readouts and shift switched off."""
-    model = calc.models[0]
-    th0 = theta0(model) if th0 is None else th0
-    E, D = energy_and_descriptor(calc, atoms, hooks)
-    zeroed = copy.deepcopy(model)
-    lin0, lin2 = _readout_layers(zeroed)
+# ── corrected model ──────────────────────────────────────────────────────────
+class LinearCorrectedReadout(torch.nn.Module):
+    """readouts[1] + c·h¹ (per node).  `c` is in pre-scale units (δΘ/scale)."""
+
+    def __init__(self, inner, c):
+        super().__init__()
+        self.inner = inner
+        self.register_buffer("c", torch.as_tensor(c, dtype=torch.float64).clone())
+
+    def forward(self, x, heads=None):
+        return self.inner(x, heads) + (x[:, : self.c.numel()] @ self.c).unsqueeze(-1)
+
+
+def _add_to_linear(lin, n, d_eff):
+    """Add d_eff to the effective weights of an e3nn 0e→0e Linear (w_eff = α·w_raw)."""
+    raw = lin.weight.detach().clone()
+    assert raw.numel() == n, "0e→0e block must be the only weight block"
     with torch.no_grad():
-        lin0.weight.zero_()
-        lin2.weight.zero_()
-        zeroed.scale_shift.shift.zero_()
-    calc.models[0] = zeroed
-    try:
-        at = atoms.copy()
-        at.calc = calc
-        E_frozen = at.get_potential_energy()
-    finally:
-        calc.models[0] = model
-    return E - D @ th0 - E_frozen
+        lin.weight.fill_(1.0)
+    alpha = _probe(lin, n)
+    with torch.no_grad():
+        lin.weight.copy_(raw + torch.as_tensor(d_eff, dtype=torch.float64) / alpha)
+
+
+def apply_correction(model, dtheta, mode):
+    """Deep copy of `model` whose energy is exactly E_MACE + D·δΘ."""
+    new = copy.deepcopy(model)
+    ro, n0, nh, n1 = _readouts(new)
+    assert len(dtheta) == n_columns(new, mode)
+    scale = float(new.scale_shift.scale.reshape(-1)[0])
+    dtheta = np.asarray(dtheta, dtype=np.float64)
+    _add_to_linear(ro[0].linear, n0, dtheta[:n0] / scale)
+    if mode == "perez":
+        new.readouts[1] = LinearCorrectedReadout(ro[1], dtheta[n0 : n0 + nh] / scale)
+    else:
+        _add_to_linear(ro[1].linear_2, n1, dtheta[n0 : n0 + n1] / scale)
+    with torch.no_grad():
+        new.scale_shift.shift.add_(float(dtheta[-1]))
+    return new
 
 
 # ── strain ───────────────────────────────────────────────────────────────────
@@ -155,7 +185,7 @@ def strain_derivatives(fn, atoms, h):
     """
     Finite-difference strain derivatives of fn(atoms) (scalar or vector) for a cubic crystal.
     Returns dict: d1 = ∂/∂ε₁, d11 = ∂²/∂ε₁², d12 = ∂²/∂ε₁∂ε₂, d44 = ∂²/∂ε₄².
-    BCC has every atom on an inversion centre, so no internal relaxation is needed.
+    BCC is a Bravais lattice (every atom an inversion centre): no internal relaxation.
     """
     def f(v):
         return np.asarray(fn(strained(atoms, v)), dtype=np.float64)
@@ -193,25 +223,3 @@ def relaxed_bcc_a(calc, a_guess=3.16, element="Mo"):
         c = np.polyfit(grid, Es, 2)
         a = -c[1] / (2 * c[0])
     return float(a)
-
-
-# ── corrected model ──────────────────────────────────────────────────────────
-def apply_correction(model, dtheta):
-    """Return a deep copy of `model` whose energy is E_MACE + D·δΘ."""
-    new = copy.deepcopy(model)
-    n0, n1 = feature_dims(new)
-    assert len(dtheta) == n0 + n1 + 1
-    lin0, lin2 = _readout_layers(new)
-    scale = float(new.scale_shift.scale.reshape(-1)[0])
-    for lin, d in ((lin0, dtheta[:n0]), (lin2, dtheta[n0 : n0 + n1])):
-        # w_eff is linear in the raw weight: find the per-entry normalisation α (w_eff = α·w_raw)
-        raw = lin.weight.detach().clone()
-        with torch.no_grad():
-            lin.weight.fill_(1.0)
-        alpha = effective_weights(new)[0 if lin is lin0 else 1]
-        assert alpha.numel() == raw.numel(), "0e→0e block must be the only weight block"
-        with torch.no_grad():
-            lin.weight.copy_(raw + torch.as_tensor(d, dtype=torch.float64) / (scale * alpha))
-    with torch.no_grad():
-        new.scale_shift.shift.add_(float(dtheta[-1]))
-    return new

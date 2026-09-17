@@ -4,7 +4,8 @@
 #   minimise   (1/2n) Σ_i ((E_DFT,i − E_MACE,i − D_i·δΘ)/N_i)²  +  (λ/2) ‖S δΘ‖²
 #   subject to l ≤ A δΘ ≤ u          (C11, C12, C44 windows + zero stress at A0)
 #
-# δΘ is a correction to the MACE-MPA-0 readout (lib_mace_readout.py): the corrected
+# δΘ is a linear corrector on the MACE-MPA-0 readout descriptors (lib_mace_readout.py; Perez et
+# al. 2025 Eq. 10 for DESCRIPTOR=perez, the default): the corrected
 # model is E_MACE + D·δΘ.  The QP is solved in θ̃ = S δΘ, S = diag(column std of D/N)
 # (same idea as the ACE Γ-space QPs), so the ridge acts on per-atom energy scale.
 # The last column (Σ_atoms 1) is the per-atom reference offset: mlearn's PBE and
@@ -12,21 +13,22 @@
 #
 # Three fits share λ, so the table isolates what the constraint costs:
 #   offset   : only the constant column (MACE-MPA-0 as-is, reference shifted)
-#   ridge    : all 145 columns, no constraints
-#   constr.  : all 145 columns + constraints (OSQP)
+#   ridge    : all columns, no constraints
+#   constr.  : all columns + constraints (OSQP)
 #
 # Inputs  : $OUTDIR from 01_build_design_and_constraints.py
 # Outputs : $OUTDIR/delta_theta_constrained.csv, delta_theta_ridge.csv, delta_theta_offset.csv
 #
 # Run:  julia --project constrained_optimization/mo_mace/02_constrained_readout_qp.jl
-# Env:  REPO OUTDIR  LAMBDA (default 1e-4)  EPS (OSQP eps_abs = eps_rel, default 1e-9)
+# Env:  REPO OUTDIR DESCRIPTOR  LAMBDA (default 1e-4)  EPS (OSQP eps_abs = eps_rel, default 1e-9)
 #       SCAN=1  prints a λ scan (train/test RMSE, ridge vs constrained) before the main fit
 # ─────────────────────────────────────────────────────────────────────────────
 
 using OSQP, SparseArrays, LinearAlgebra, DelimitedFiles, Printf, Statistics
 
 REPO   = get(ENV, "REPO", "/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow")
-OUTDIR = get(ENV, "OUTDIR", joinpath(REPO, "models", "Mo_MACE_MPA0_readout"))
+DESCRIPTOR = get(ENV, "DESCRIPTOR", "perez")
+OUTDIR = get(ENV, "OUTDIR", joinpath(REPO, "models", "Mo_MACE_MPA0_readout", DESCRIPTOR))
 LAMBDA = parse(Float64, get(ENV, "LAMBDA", "1e-4"))
 EPS    = parse(Float64, get(ENV, "EPS", "1e-9"))
 GROUPS = ["Elastic", "AIMD-NVT", "Vacancy", "Surface"]
