@@ -558,7 +558,7 @@ x_vals_out, all_freqs, _, _ = phonon_committee(model, con_samples, result; N_per
 # Supercell: 3×3×3 conventional cell (∼12.15 Å sides) — must be ≥ 2× the ACE
 # cutoff (6 Å) so that Φ(i, j+R) decays to zero before the boundary.
 
-N         = 5
+N         = 4
 a_eq      = ACEWorkflow.relax_lattice_constant(model, :Al)
 sys_prim  = bulk(:Al; a=a_eq*u"Å")                         # 1 atom, 3 branches
 sys_super = bulk(:Al; a=a_eq*u"Å", cubic=true) * (N,N,N)   # 256 atoms, Hessian source

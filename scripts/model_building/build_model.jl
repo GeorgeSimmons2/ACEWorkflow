@@ -8,9 +8,9 @@ end
 
 @everywhere using ACEWorkflow
 
-for i = 12:20
+for i = 12:2:20
     percent = 5
-    model_name, model_dir, _, _ = build_model(:Al, i, 4, 6.0, 2; training_xyz="/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/data/Al/manual_df_train_Al.extxyz", dataset_name = "")
+    model_name, model_dir, _, _ = build_model(:C, i, 4, 5.0, 2; training_xyz="/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow/data/C/df_C_train.extxyz", dataset_name = "full")
 end
 
 # for i = 12:20

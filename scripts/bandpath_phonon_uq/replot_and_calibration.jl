@@ -16,12 +16,12 @@ include(joinpath(@__DIR__, "lib.jl"))
 using Random
 
 element      = :Al
-dataset      = "subset_50_percent"      # model we analysed (has the saved committee)
+dataset      = ""      # model we analysed (has the saved committee)
 N_cell       = 3
 n_lev, n_res, n_rand = 5, 10, 15
 test_xyz     = "data/Al/manual_df_test_Al.xyz"
 
-result = load_model(element, 20, 4, 6, 2; dataset_name=dataset)
+result = load_model(element, 12, 4, 6, 2; dataset_name=dataset)
 model  = result.model; lin_params = result.lin_params
 cdir   = "$(result.dir)/results/bandpath_undotted"        # where the committee was saved
 outdir = "$(result.dir)/results/bandpath_phonon_uq"; mkpath(outdir)
@@ -47,9 +47,14 @@ naive = [forest_member(i) for i in vcat(lev_idx, res_idx, rand_idx)]
 
 # ── (1) FIXED band plots ─────────────────────────────────────────────────────
 rej = [readdlm("$cdir/committee_rejection.csv", ',')[i,:] for i in 1:30]
-println("\nRegenerating band plots (Γ fixed) …")
-plot_committee_bands(rej,  θ_mean_bands, bp, "$(result.name) — constrained committee (band-path, a_eq-fixed)", "$outdir/bands_constrained.png")
-plot_committee_bands(naive, lin_params,  bp, "$(result.name) — naive POPS committee",                        "$outdir/bands_naive.png")
+println("\nRegenerating band plots (Γ fixed, shared frequency axis) …")
+# common frequency range across BOTH committees (and their means) so the two
+# panels sit on an identical axis and line up for side-by-side comparison
+ext_all = [extrema(bands(θ, bp)) for θ in vcat(rej, naive, [θ_mean_bands, lin_params])]
+fmin = minimum(first.(ext_all)); fmax = maximum(last.(ext_all))
+pad  = 0.04*(fmax - fmin); yl = (fmin - pad, fmax + pad)
+plot_committee_bands(naive, lin_params,  bp, "Naive POPS committee",  "$outdir/bands_naive.png";       ylims=yl, panel="(a)")
+plot_committee_bands(rej,   θ_mean_bands, bp, "Constrained committee", "$outdir/bands_constrained.png"; ylims=yl, panel="(b)")
 @printf("  constrained: min band ω = %+.3f THz (%d/%d unstable)\n",
         minimum(min_freq_stable(θ,bp) for θ in rej), count(θ->min_freq_stable(θ,bp)<-0.05, rej), length(rej))
 @printf("  naive      : min band ω = %+.3f THz (%d/%d unstable)\n",
@@ -60,11 +65,11 @@ println("\nTest-set predictions (constrained committee) …")
 pr = committee_predictions(model, rej, test_xyz; stride=10, point_params=θ_mean_bands)
 @printf("  %d test configs\n", pr.n)
 eR = parity_plot(pr.tE, pr.pE, pr.loE, pr.hiE, "DFT energy (eV)", "ACE energy (eV)", "$outdir/energy_parity.png")
-cE = calibration_hist(pr.tE, pr.pE, pr.loE, pr.hiE; label="Energy", path="$outdir/energy_calibration.png")
+cE = calibration_hist(pr.tE, pr.pE, pr.loE, pr.hiE, pr.dE; label="Energy", path="$outdir/energy_calibration.png")
 @printf("  ENERGY  RMSE=%.4g eV   coverage=%.1f%%   bias=%.0f%% MAE\n", eR, cE.coverage, cE.bias)
 if !isempty(pr.tF)
     fR = parity_plot(pr.tF, pr.pF, pr.loF, pr.hiF, "DFT force (eV/Å)", "ACE force (eV/Å)", "$outdir/force_parity.png"; col=:tomato)
-    cF = calibration_hist(pr.tF, pr.pF, pr.loF, pr.hiF; label="Force", path="$outdir/force_calibration.png")
+    cF = calibration_hist(pr.tF, pr.pF, pr.loF, pr.hiF, pr.dF; label="Force", path="$outdir/force_calibration.png")
     @printf("  FORCE   RMSE=%.4g eV/Å coverage=%.1f%%   bias=%.0f%% MAE\n", fR, cF.coverage, cF.bias)
 end
 ACEpotentials.Models.set_linear_parameters!(model, lin_params)

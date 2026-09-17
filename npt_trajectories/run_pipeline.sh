@@ -1,0 +1,265 @@
+#!/bin/bash
+# run_pipeline.sh — constrain → MD → figure, end to end.
+#
+#   bash npt_trajectories/run_pipeline.sh <stage>
+#
+# ┌ START HERE ───────────────────────────────────────────────────────────────┐
+# │ reproduce   Rerun the NPT on the SAVED parameter vectors.  No committee is │
+# │             built and none is read — the θ behind the figure are on disk,  │
+# │             so reproducing the trajectory means rerunning that θ.  This is │
+# │             the mode that reproduces the analysis.                         │
+# │                                                                            │
+# │ all         Also regenerate the committees.  This will NOT give the same   │
+# │             parameters — committee members are not reproducible run to run │
+# │             (see "Determinism" in README.md) — so α will shift.  Only for   │
+# │             claiming end-to-end reproducibility, and only after            │
+# │             verify-determinism comes back clean.                           │
+# └────────────────────────────────────────────────────────────────────────────┘
+#
+#   constrain            stage 1 only  — build both committees
+#   md                   stage 2 only  — NPT on freshly built committees
+#   figure               stage 3 only  — replot from the PUBLISHED summaries (local)
+#   figure-repro         stage 3 only  — replot from THIS run's output (use after `all`)
+#   compare-published    how far did regenerating the committee move the answer?
+#   all                  1 → 2 → 3, chained with SLURM dependencies
+#   reproduce            NPT on the saved θ (no committee) — the reproduction path
+#   paired               NPT on naive[15] vs ITS OWN repair — isolates the constraint
+#   verify-determinism   run stage 1 twice into separate dirs and compare
+#
+# Env:  REPO (repo root)   RHO_INTERVAL (pinned OSQP rho schedule, default 25)
+set -euo pipefail
+
+REPO=${REPO:-/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow}
+HERE="$REPO/npt_trajectories"
+RES="$REPO/models/Al_12_4_6A_2_/results"
+STAGE=${1:-help}
+export REPO
+export RHO_INTERVAL=${RHO_INTERVAL:-25}
+
+# every sbatch inherits the exported environment, which is how COMMITTEE_DIR /
+# COMMITTEE_OUT / THETA_REF reach the Julia scripts
+submit() { sbatch --parsable --export=ALL "$@"; }
+
+stage1() {   # -> sets JOB_MV, JOB_AEQ
+  echo "── stage 1: constrain  (RHO_INTERVAL=$RHO_INTERVAL) ───────────────"
+  JOB_MV=$(submit "$HERE/run_committee_constrained.slurm")
+  JOB_AEQ=$(submit "$HERE/run_committee_aeq.slurm")
+  echo "    multi-volume committee : job $JOB_MV → results/repro_bandpath_undotted_multivolume/"
+  echo "    a_eq committee         : job $JOB_AEQ → results/repro_bandpath_undotted/"
+}
+
+case "$STAGE" in
+
+constrain)
+  stage1
+  ;;
+
+all)
+  stage1
+  echo "── stage 2: MD, queued after stage 1 ──────────────────────────────"
+  # THETA_REF=none because a regenerated committee does not reproduce the published
+  # members, so checking against them would (correctly) abort every run.
+  export THETA_REF=none
+  JM1=$(COMMITTEE_DIR="$RES/repro_bandpath_undotted_multivolume" \
+        submit --dependency=afterok:"$JOB_MV"  "$HERE/run_npt_constrained_softest.slurm")
+  JM2=$(COMMITTEE_DIR="$RES/repro_bandpath_undotted" \
+        submit --dependency=afterok:"$JOB_AEQ" "$HERE/run_npt_unconstrained_naive_worst.slurm")
+  echo "    constrained MD   : job $JM1"
+  echo "    unconstrained MD : job $JM2"
+  echo
+  echo "Stage 3 is local.  Once those finish:"
+  echo "    bash npt_trajectories/run_pipeline.sh figure-repro       # plot THIS run"
+  echo "    bash npt_trajectories/run_pipeline.sh compare-published  # how far did it move?"
+  echo
+  echo "NOTE: plain \`figure\` still plots the PUBLISHED summaries.  This run writes to"
+  echo "      repro_* directories and does not touch them."
+  ;;
+
+md)
+  echo "── stage 2 only: MD against the freshly built committees ───────────"
+  export THETA_REF=none
+  COMMITTEE_DIR="$RES/repro_bandpath_undotted_multivolume" \
+    submit "$HERE/run_npt_constrained_softest.slurm"
+  COMMITTEE_DIR="$RES/repro_bandpath_undotted" \
+    submit "$HERE/run_npt_unconstrained_naive_worst.slurm"
+  ;;
+
+reproduce|published)
+  # No committee is built or read.  Each driver loads the θ the published run saved
+  # beside its own outputs -- that is its THETA_FILE default -- so this reruns the exact
+  # parameter vectors behind the figure.
+  echo "── rerun the NPT on the SAVED parameter vectors ────────────────────"
+  for f in "$RES/npt_thermal_expansion_naive_worst_member/theta_naive_worst.csv" \
+           "$RES/npt_multivolume_softest/theta_used.csv"; do
+    [ -f "$f" ] || { echo "    MISSING $f"; exit 1; }
+    echo "    θ: $f"
+  done
+  J1=$(submit "$HERE/run_npt_constrained_softest.slurm")
+  J2=$(submit "$HERE/run_npt_unconstrained_naive_worst.slurm")
+  echo "    constrained MD   : job $J1 → results/repro_npt_multivolume_softest/"
+  echo "    unconstrained MD : job $J2 → results/repro_npt_thermal_expansion_naive_worst_member/"
+  echo
+  echo "When both finish:"
+  echo "    bash npt_trajectories/run_pipeline.sh figure-repro       # plot the rerun"
+  echo "    bash npt_trajectories/run_pipeline.sh compare-reproduced # rerun vs published a(T)"
+  ;;
+
+paired)
+  # The published red and blue are unrelated vectors (‖Δθ‖ = 9.04), so their difference
+  # confounds "constraining helped" with "different member".  This runs naive[15] against
+  # committee_repaired[15] -- the SAME POPS member before and after constraining -- so the
+  # only difference between the two trajectories is the constraint.
+  # Both arms use the SAME driver (the constrained one, which carries the FCC-survival
+  # diagnostic), so the analysis is identical on both sides too.
+  echo "── paired before/after: naive[15] vs its own repair ────────────────"
+  julia --project="$REPO" "$HERE/make_paired_members.jl" || exit 1
+  PAIR="$RES/paired_before_after"
+  J1=$(THETA_FILE="$PAIR/theta_paired_naive.csv" \
+       OUTDIR="$RES/repro_paired_naive" \
+       submit --job-name=paired_naive "$HERE/run_npt_constrained_softest.slurm")
+  J2=$(THETA_FILE="$PAIR/theta_paired_constrained.csv" \
+       OUTDIR="$RES/repro_paired_constrained" \
+       submit --job-name=paired_con "$HERE/run_npt_constrained_softest.slurm")
+  echo "    before (naive[15])    : job $J1 → results/repro_paired_naive/"
+  echo "    after  (repaired[15]) : job $J2 → results/repro_paired_constrained/"
+  echo
+  echo "When both finish:"
+  echo "    bash npt_trajectories/run_pipeline.sh figure-paired"
+  ;;
+
+figure-paired)
+  echo "── stage 3: figure, paired before/after ────────────────────────────"
+  for d in "$RES/repro_paired_naive" "$RES/repro_paired_constrained"; do
+    [ -f "$d/thermal_expansion_summary.csv" ] || {
+      echo "    missing $d/thermal_expansion_summary.csv -- check squeue"; exit 1; }
+  done
+  DIR_UNCON="$RES/repro_paired_naive" \
+  DIR_CON="$RES/repro_paired_constrained" \
+  OUT=${OUT:-"$REPO/thermal_expansion_vs_experiment/thermal_expansion_aT_paired"} \
+    julia --project="$REPO" \
+    "$REPO/thermal_expansion_vs_experiment/plot_thermal_expansion_vs_experiment.jl"
+  ;;
+
+compare-reproduced)
+  # Same θ, same settings, different RNG stream draw order in Molly -> the trajectories
+  # are not bit-identical, so what matters is whether a(T) and α agree within the
+  # fluctuation width already quoted as the error bars.
+  echo "── reproduced vs published a(T) ────────────────────────────────────"
+  julia --project="$REPO" -e '
+    using DelimitedFiles, Printf
+    R = ARGS[1]
+    for (lab, pub, rep) in (("constrained",   "npt_multivolume_softest",
+                                              "repro_npt_multivolume_softest"),
+                            ("unconstrained", "npt_thermal_expansion_naive_worst_member",
+                                              "repro_npt_thermal_expansion_naive_worst_member"))
+        pa = joinpath(R, pub, "thermal_expansion_summary.csv")
+        pb = joinpath(R, rep, "thermal_expansion_summary.csv")
+        if !isfile(pb); @printf("%-14s rerun not finished yet
+", lab); continue; end
+        rd(p) = (ls = readlines(p); n = count(l -> startswith(l, "#"), ls);
+                 readdlm(p, Char(0x2c); skipstart = n + 1))
+        a = rd(pa); b = rd(pb)
+        println("
+", lab, "   T_K     published      rerun         diff     (sd of the rerun)")
+        for i in 1:min(size(a,1), size(b,1))
+            @printf("  %13.0f  %10.6f  %10.6f  %+9.6f   %8.6f
+",
+                    a[i,1], a[i,2], b[i,2], b[i,2] - a[i,2], b[i,3])
+        end
+    end
+    println("
+Same θ and settings, but Molly draws a fresh Langevin/barostat stream, so")
+    println("these are independent samples of the same ensemble, not bit-identical runs.")
+    println("Agreement within the quoted sd is the correct expectation.")' "$RES"
+  ;;
+
+figure)
+  echo "── stage 3: figure, from the PUBLISHED summaries ───────────────────"
+  RESDIR=${RESDIR:-$RES} julia --project="$REPO" \
+    "$REPO/thermal_expansion_vs_experiment/plot_thermal_expansion_vs_experiment.jl"
+  ;;
+
+figure-repro)
+  # `all` writes to repro_* leaf names, which differ from the published ones, so the
+  # plotter has to be pointed at them explicitly -- RESDIR alone will not do it.
+  echo "── stage 3: figure, from THIS pipeline run's output ────────────────"
+  for d in "$RES/repro_npt_thermal_expansion_naive_worst_member" "$RES/repro_npt_multivolume_softest"; do
+    [ -f "$d/thermal_expansion_summary.csv" ] || {
+      echo "    missing $d/thermal_expansion_summary.csv"
+      echo "    stage 2 has not finished -- check squeue"; exit 1; }
+  done
+  DIR_UNCON="$RES/repro_npt_thermal_expansion_naive_worst_member" \
+  DIR_CON="$RES/repro_npt_multivolume_softest" \
+  OUT=${OUT:-"$REPO/thermal_expansion_vs_experiment/thermal_expansion_aT_vs_experiment_repro"} \
+    julia --project="$REPO" \
+    "$REPO/thermal_expansion_vs_experiment/plot_thermal_expansion_vs_experiment.jl"
+  ;;
+
+compare-published)
+  # How far did regenerating the committee move the answer?  Members are not
+  # reproducible, so this is the number that says whether that matters.
+  echo "── fresh committee vs published ────────────────────────────────────"
+  julia --project="$REPO" -e '
+    using DelimitedFiles, Printf
+    R = ARGS[1]
+    pairs = [("committee (softest member)", "bandpath_undotted_multivolume/theta_npt_softest.csv",
+                                            "repro_bandpath_undotted_multivolume/theta_npt_softest.csv"),
+             ("committee (mean model)",     "bandpath_undotted_multivolume/theta_mean.csv",
+                                            "repro_bandpath_undotted_multivolume/theta_mean.csv")]
+    for (lab, a, b) in pairs
+        pa = joinpath(R, a); pb = joinpath(R, b)
+        (isfile(pa) && isfile(pb)) || (@printf("%-28s not available yet\n", lab); continue)
+        x = readdlm(pa, Char(0x2c)); y = readdlm(pb, Char(0x2c))
+        @printf("%-28s max |d| = %.4e\n", lab, maximum(abs.(x .- y)))
+    end
+    for (lab, a, b) in [("alpha / a(T) summary", "npt_multivolume_softest", "repro_npt_multivolume_softest")]
+        pa = joinpath(R, a, "thermal_expansion_summary.csv")
+        pb = joinpath(R, b, "thermal_expansion_summary.csv")
+        (isfile(pa) && isfile(pb)) || (@printf("%-28s not available yet\n", lab); continue)
+        println("\n-- published --");   print(read(pa, String))
+        println("-- regenerated --"); print(read(pb, String))
+    end' "$RES"
+  ;;
+
+verify-determinism)
+  # The claim under test: pinning OSQP's rho schedule makes the constrained committee
+  # reproducible.  For scale, the UNPINNED original differs between identical runs by
+  # max |Δθ| = 4.31 on the softest member.  Run B is queued after A rather than
+  # alongside it — two jobs sharing a node would perturb each other's timing, which is
+  # the very thing under test.
+  echo "── determinism check: stage 1 twice, RHO_INTERVAL=$RHO_INTERVAL ────"
+  A=$(COMMITTEE_OUT="$RES/determinism_A" submit "$HERE/run_committee_constrained.slurm")
+  B=$(COMMITTEE_OUT="$RES/determinism_B" submit --dependency=afterok:"$A" \
+      "$HERE/run_committee_constrained.slurm")
+  echo "    run A: job $A → results/determinism_A/"
+  echo "    run B: job $B → results/determinism_B/  (queued after A)"
+  echo
+  echo "When both finish, compare:"
+  echo "    bash npt_trajectories/run_pipeline.sh compare-determinism"
+  ;;
+
+compare-determinism)
+  julia --project="$REPO" -e '
+    using DelimitedFiles, Printf
+    R = ARGS[1]
+    for f in ("theta_mean.csv", "theta_npt_softest.csv", "committee_rejection.csv")
+        pa = joinpath(R, "determinism_A", f); pb = joinpath(R, "determinism_B", f)
+        if !isfile(pa) || !isfile(pb)
+            @printf("%-26s missing (run verify-determinism first)\n", f); continue
+        end
+        a = readdlm(pa, Char(0x2c)); b = readdlm(pb, Char(0x2c))
+        if size(a) != size(b)
+            @printf("%-26s SHAPE DIFFERS %s vs %s\n", f, size(a), size(b))
+        else
+            @printf("%-26s max |Δ| = %.3e%s\n", f, maximum(abs.(a .- b)),
+                    maximum(abs.(a .- b)) == 0 ? "   ← bit-exact" : "")
+        end
+    end
+    println("\nFor scale: the unpinned original differs by 4.31 on theta_npt_softest.")' "$RES"
+  ;;
+
+*)
+  sed -n '2,30p' "$0"
+  exit 1
+  ;;
+esac

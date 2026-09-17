@@ -23,7 +23,7 @@ using SparseArrays, OSQP, Random
 Random.seed!(1234)
 
 element        = :Al
-dataset        = ""            # "" → full-dataset model (Al_20_4_6A_2_); e.g. "subset_50_percent"
+dataset        = "subset_5_percent"            # "" → full-dataset model (Al_20_4_6A_2_); e.g. "subset_50_percent"
 a_experimental = nothing       # Float (Å) to pin a_eq experimentally; nothing → mean model
 N_cell_fc      = 3
 N_per_seg      = 20
@@ -32,7 +32,7 @@ n_lev, n_res, n_rand = 5, 10, 15
 max_cuts       = 40
 test_stride    = 20
 
-result     = load_model(element, 20, 4, 6, 3; dataset_name=dataset)
+result     = load_model(element, 20, 4, 6, 4; dataset_name=dataset)
 model      = result.model; lin_params = result.lin_params; n_params = length(lin_params)
 P = result.P; Ap = Diagonal(result.W)*result.A/P; Yw = result.W.*result.Y; λ = 1.0/size(Ap,1)
 outdir = "$(result.dir)/results/bandpath_undotted"; mkpath(outdir)
@@ -162,11 +162,11 @@ println("All outputs → $outdir/")
 
 @printf("  %d test configs\n", pr.n)
 eR = parity_plot(pr.tE, pr.pE, pr.loE, pr.hiE, "DFT energy (eV)", "ACE energy (eV)", "$outdir/energy_parity.png")
-cE = calibration_hist(pr.tE, pr.pE, pr.loE, pr.hiE; label="Energy", path="$outdir/energy_calibration.png")
+cE = calibration_hist(pr.tE, pr.pE, pr.loE, pr.hiE, pr.dE; label="Energy", path="$outdir/energy_calibration.png")
 @printf("  ENERGY  RMSE=%.4g eV   coverage=%.1f%%   bias=%.0f%% MAE\n", eR, cE.coverage, cE.bias)
 if !isempty(pr.tF)
     fR = parity_plot(pr.tF, pr.pF, pr.loF, pr.hiF, "DFT force (eV/Å)", "ACE force (eV/Å)", "$outdir/force_parity.png"; col=:tomato)
-    cF = calibration_hist(pr.tF, pr.pF, pr.loF, pr.hiF; label="Force", path="$outdir/force_calibration.png")
+    cF = calibration_hist(pr.tF, pr.pF, pr.loF, pr.hiF, pr.dF; label="Force", path="$outdir/force_calibration.png")
     @printf("  FORCE   RMSE=%.4g eV/Å coverage=%.1f%%   bias=%.0f%% MAE\n", fR, cF.coverage, cF.bias)
 end
 ACEpotentials.Models.set_linear_parameters!(model, lin_params)
