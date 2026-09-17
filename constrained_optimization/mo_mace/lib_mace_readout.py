@@ -94,6 +94,7 @@ class ReadoutHooks:
 
     def __init__(self, model, mode):
         self.mode = mode
+        self.keep_graph = False
         ro, self.n0, self.nh, self.n1 = _readouts(model)
         self.buf = {}
         self.handles = [
@@ -104,7 +105,7 @@ class ReadoutHooks:
 
     def _grab(self, key):
         def hook(mod, args):
-            self.buf[key] = args[0].detach()
+            self.buf[key] = args[0] if self.keep_graph else args[0].detach()
         return hook
 
     def remove(self):
@@ -121,6 +122,71 @@ def energy_and_descriptor(calc, atoms, hooks):
     h0 = hooks.buf["h0"][:, : hooks.n0].sum(0).numpy()
     last = hooks.buf["h1"] if hooks.mode == "perez" else hooks.buf["x1"]
     return E, np.concatenate([h0, last.sum(0).numpy(), [len(at)]])
+
+
+def descriptor_force_jacobian(calc, atoms, hooks):
+    """
+    G = −∂D/∂r, shape (3N, n_columns), row order atom-major (x₁,y₁,z₁,x₂,…) as in F.ravel().
+    The force of the correction is G·δΘ, so the corrected forces are F_MACE + G·δΘ.
+    One reverse pass per descriptor column (batched through the graph when torch allows).
+    The constant column has zero gradient.
+    """
+    model = calc.models[0]
+    batch = calc._atoms_to_batch(atoms)
+    data = batch.to_dict()
+    n = len(atoms)
+    hooks.buf.clear()
+    hooks.keep_graph = True
+    try:
+        with torch.enable_grad():
+            model(data, training=False, compute_force=False, compute_virials=False,
+                  compute_stress=False)
+            pos = data["positions"]
+            assert pos.requires_grad and pos.shape[0] == n, "unexpected batch (padding?)"
+            h0 = hooks.buf["h0"][:, : hooks.n0].sum(0)
+            last = (hooks.buf["h1"] if hooks.mode == "perez" else hooks.buf["x1"]).sum(0)
+            Dvec = torch.cat([h0, last])                               # (ncol − 1,)
+            m = Dvec.numel()
+            eye = torch.eye(m, dtype=Dvec.dtype)
+            try:
+                (J,) = torch.autograd.grad(Dvec, pos, grad_outputs=eye, is_grads_batched=True)
+            except Exception:
+                J = torch.stack([torch.autograd.grad(Dvec[j], pos, retain_graph=j < m - 1)[0]
+                                 for j in range(m)])
+    finally:
+        hooks.keep_graph = False
+        hooks.buf.clear()
+    G = np.zeros((3 * n, m + 1))
+    G[:, :m] = -J.detach().reshape(m, 3 * n).T.numpy()
+    return G
+
+
+# ── per-config blocks, for a process pool ────────────────────────────────────
+_WORKER = {}
+
+
+def init_worker(mode, threads):
+    torch.set_num_threads(max(1, int(threads)))
+    calc = load_calc()
+    _WORKER.update(calc=calc, hooks=ReadoutHooks(calc.models[0], mode))
+
+
+def config_blocks(args):
+    """
+    args = (atoms without calc, E_DFT, F_DFT (N×3) or None).
+    Returns E_MACE, D and — if forces given — GᵀG, GᵀΔF, ΔFᵀΔF, 3N with ΔF = F_DFT − F_MACE.
+    """
+    atoms, E_dft, F_dft = args
+    calc, hooks = _WORKER["calc"], _WORKER["hooks"]
+    E_mace, D = energy_and_descriptor(calc, atoms, hooks)
+    out = {"E_dft": E_dft, "E_mace": E_mace, "D": D, "n": len(atoms)}
+    if F_dft is not None:
+        x = atoms.copy()
+        x.calc = calc
+        dF = (np.asarray(F_dft) - x.get_forces()).ravel()
+        G = descriptor_force_jacobian(calc, atoms, hooks)
+        out.update(GtG=G.T @ G, Gtf=G.T @ dF, ftf=float(dF @ dF), nF=dF.size)
+    return out
 
 
 # ── corrected model ──────────────────────────────────────────────────────────

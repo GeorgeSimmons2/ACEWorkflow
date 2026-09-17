@@ -1,5 +1,5 @@
 """
-04_before_after.py — test-set energy errors and C11, C12, C44: MACE-MPA-0 vs constrained.
+04_before_after.py — test-set energy and force errors and C11, C12, C44: MACE-MPA-0 vs constrained.
 
 Loads the SAVED model files written by 03 (not an in-memory patch), so this also checks the
 deployable artefact.
@@ -10,6 +10,7 @@ deployable artefact.
   after  : mace_mpa0_mo_constrained.model
 
 Energies: per-atom RMSE and MAE on data/Mo/mlearn_Mo_test.extxyz, overall and per group.
+Forces: component RMSE and MAE (meV/Å), overall and per group (the offset does not touch forces).
 C_ij: finite differences at each model's OWN relaxed BCC lattice constant, and at A0 from 01.
 
 Writes $OUTDIR/before_after.csv  (rows: model; columns: metrics).
@@ -60,21 +61,27 @@ def elastic(calc, a):
 
 
 def per_atom_errors(calc, shift=0.0):
-    err, grp = [], []
+    err, grp, ferr, fgrp = [], [], [], []
     for at in test:
         x = at.copy()
         x.calc = calc
         err.append((x.get_potential_energy() - at.get_potential_energy()) / len(at) + shift)
         grp.append(at.info["config_type"])
-    return 1e3 * np.array(err), np.array(grp)  # meV/atom
+        df = (x.get_forces() - at.get_forces()).ravel()
+        ferr.append(df)
+        fgrp += [at.info["config_type"]] * df.size
+    return 1e3 * np.array(err), np.array(grp), 1e3 * np.concatenate(ferr), np.array(fgrp)  # meV/atom, meV/Å
 
 
 def summarise(name, calc, shift, elastics=True):
-    e, g = per_atom_errors(calc, shift)
-    row = {"model": name, "E_rmse_test": np.sqrt(np.mean(e**2)), "E_mae_test": np.mean(np.abs(e))}
+    e, g, f, fg = per_atom_errors(calc, shift)
+    row = {"model": name, "E_rmse_test": np.sqrt(np.mean(e**2)), "E_mae_test": np.mean(np.abs(e)),
+           "F_rmse_test": np.sqrt(np.mean(f**2)), "F_mae_test": np.mean(np.abs(f))}
     for grp in GROUPS:
         m = g == grp
         row[f"E_rmse_{grp}"] = np.sqrt(np.mean(e[m] ** 2)) if m.any() else np.nan
+        m = fg == grp
+        row[f"F_rmse_{grp}"] = np.sqrt(np.mean(f[m] ** 2)) if m.any() else np.nan
     if not elastics:
         return row
     a = L.relaxed_bcc_a(calc, a_guess=A0)
@@ -99,6 +106,10 @@ print(f"\n{'':32s}{'E RMSE':>9s}{'E MAE':>9s}" + "".join(f"{g:>10s}" for g in GR
 for r in rows:
     print(f"{r['model']:32s}{r['E_rmse_test']:9.2f}{r['E_mae_test']:9.2f}"
           + "".join(f"{r[f'E_rmse_{g}']:10.2f}" for g in GROUPS))
+print(f"\n{'':32s}{'F RMSE':>9s}{'F MAE':>9s}" + "".join(f"{g:>10s}" for g in GROUPS) + "   (meV/Å)")
+for r in rows[1:]:
+    print(f"{r['model']:32s}{r['F_rmse_test']:9.1f}{r['F_mae_test']:9.1f}"
+          + "".join(f"{r[f'F_rmse_{g}']:10.1f}" for g in GROUPS))
 
 print(f"\n{'':32s}{'a (Å)':>8s}{'C11':>9s}{'C12':>9s}{'C44':>9s}   at own a   |{'C11':>9s}{'C12':>9s}{'C44':>9s}   at A0 (GPa)")
 print(f"{'experiment':32s}{'':8s}" + "".join(f"{v:9.1f}" for v in EXP))

@@ -16,10 +16,24 @@ The corrected model is `E(δΘ) = E_MACE-MPA-0 + D·δΘ`, and D is summed over 
   last linear map of each readout, so δΘ just changes the existing readout weights. It is less
   expressive (16 layer-1 directions, not 128).
 
-The loss is `(1/2n) Σ ((E_DFT − E_MACE − D·δΘ)/N)² + (λ/2)‖S δΘ‖²`. That is Eq. (2) with per-atom
-rows, plus a ridge term towards the foundation model (δΘ = 0). It is solved in θ̃ = S δΘ, where
-S is the column std. The offset column is left unpenalised: it absorbs the difference between
-the DFT set's PBE reference and MPtrj's.
+The corrector's forces are `F(δΘ) = F_MACE + G·δΘ`, with `G = −∂D/∂r` computed exactly by
+autograd: one batched reverse pass over all descriptor columns per config.
+
+The loss follows MACE's weighting convention:
+
+```
+½ mean_i ((E_DFT − E_MACE − D·δΘ)/N)²  +  ½ w_F mean (F_DFT − F_MACE − G·δΘ)²  +  ½ λ‖S δΘ‖²
+```
+
+That is Eq. (2) with per-atom energy rows, plus a force term (`FORCES_WEIGHT`, default 1; 0 gives
+the old energy-only fit), plus a ridge term towards the foundation model (δΘ = 0). It is solved
+in θ̃ = S δΘ, where S is the column std.
+- **Force normal equations:** G is never stored. Step 01 writes GᵀG, GᵀΔF and ΔFᵀΔF per split and
+  config group, so every force RMSE in step 02 is exact: `‖ΔF − Gδ‖² = ftf − 2δ·Gtf + δᵀGtGδ`.
+- **Force-weight scan:** step 02 always prints one (E and F RMSE for the constrained fit,
+  w_F = 0 … 100), so the default can be revisited once the numbers are in.
+- **Offset column:** left unpenalised. It absorbs the difference between the DFT set's PBE
+  reference and MPtrj's, and has no force.
 
 The constraints are Eq. (3), written for the corrected model per unit volume at a BCC lattice
 constant A0:
@@ -38,8 +52,9 @@ C_exp(1−tol) ≤ C_MACE + (160.2/V) ∂²D/∂ε_i∂ε_j · δΘ ≤ C_exp(1+
 
 Exactness checks, all asserted:
 
-- **Step 01:** a random δΘ written into the model reproduces `E_MACE + D·δΘ` on real configs.
-  It also reproduces the strain derivatives, `∂E_patched = ∂E_MACE + ∂D·δΘ`.
+- **Step 01 (runs before the expensive loop):** a random δΘ written into the model reproduces
+  `E_MACE + D·δΘ` on real configs and `F_MACE + G·δΘ` on an AIMD config (non-zero forces). It
+  also reproduces the strain derivatives, `∂E_patched = ∂E_MACE + ∂D·δΘ`.
 - **Step 03:** the fitted δΘ is checked the same way, then C_ij, relaxed a, and energy and force
   RMSE are recomputed from the patched model itself. Forces are not in the fit.
 
@@ -53,8 +68,10 @@ Exactness checks, all asserted:
   480.0/155.8/112.4 GPa. MACE is a static 0 K model, and the 273 K→0 K shift (~3% on C11) is
   larger than `REL_TOL=0.01`. **Check against Smirnova's table** and set `C11= C12= C44=`.
 - **A0:** `A0=mace` (default) is MPA-0's relaxed a. `A0=exp` is 3.147 Å (room temperature).
-- **Other defaults:** `REL_TOL=0.01`, `P_TOL=0.1` GPa, `STRAIN_H=0.005`, `LAMBDA=1e-4`.
-  `SCAN=1` prints a λ scan.
+- **Other defaults:** `REL_TOL=0.01`, `P_TOL=0.1` GPa, `STRAIN_H=0.005`, `LAMBDA=1e-4`,
+  `FORCES=1`, `FORCES_WEIGHT=1`, `N_WORKERS=4`. `SCAN=1` prints a λ scan.
+- **Data:** all 194 mlearn Mo training configs (energies and 30,261 force components) are fitted;
+  the 23 test configs are held out.
 - **Known tension:** PBE itself gets C44 ≈ 9% below experiment (Dal Corso). A fit to PBE energies
   therefore competes with the experimental constraint, which shows up in the ridge-vs-constrained
   RMSE.
