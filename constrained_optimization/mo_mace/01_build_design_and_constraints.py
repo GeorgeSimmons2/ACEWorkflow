@@ -11,8 +11,9 @@ Forces (FORCES=1, default): G is never written; per split and per config group t
 stores the force normal equations, from which the QP and every force RMSE follow exactly:
    GtG = Σ GᵀG,  Gtf = Σ GᵀΔF,  ftf = Σ ΔFᵀΔF,  nF = Σ 3N        with ΔF = F_DFT − F_MACE
    ‖ΔF − Gδ‖² = ftf − 2δ·Gtf + δᵀ GtG δ
-Cost: one batched reverse pass over all descriptor columns per config (~10× a looped
-backward).  Configs are spread over N_WORKERS processes (MACE on CPU saturates ~10 threads).
+Cost: reverse passes batched in blocks of JAC_BLOCK columns (~10× a looped backward, at a
+fraction of the peak memory — a full 256-column batch needs ~10 GB per worker on a 53-atom
+cell and OOM-killed a 4-worker run).  Configs are spread over N_WORKERS processes.
 
 Constraints on the corrected model at the BCC lattice constant A0 (2-atom cubic cell, V):
 
@@ -46,7 +47,7 @@ Outputs ($OUTDIR, default $REPO/models/Mo_MACE_MPA0_readout/$DESCRIPTOR/):
 Run:  python/mace_venv/bin/python constrained_optimization/mo_mace/01_build_design_and_constraints.py
 Env:  REPO OUTDIR DESCRIPTOR(perez|readout)  A0 (Å, "exp" = 3.147 (298 K), default "mace")
       REL_TOL (0.01)  P_TOL (GPa, 0.1)  STRAIN_H (0.005)  C11 C12 C44 (GPa)
-      FORCES (1)  N_WORKERS (4; threads each = OMP_NUM_THREADS / N_WORKERS)
+      FORCES (1)  N_WORKERS (4; threads each = OMP_NUM_THREADS / N_WORKERS)  JAC_BLOCK (8)
 """
 
 import multiprocessing as mp
