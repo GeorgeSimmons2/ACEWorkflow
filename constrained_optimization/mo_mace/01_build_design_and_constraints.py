@@ -37,6 +37,12 @@ Checks (exact, run FIRST, must pass): for a random δΘ the patched MACE model r
 E_MACE + D·δΘ, F_MACE + G·δΘ (on an AIMD config, non-zero forces) and
 ∂E/∂ε = ∂E_MACE/∂ε + ∂D/∂ε·δΘ.
 
+DATASET picks the DFT set.  mptrj (default) is what MACE-MP-0/MPA-0 were trained on, so the
+residual is what the foundation model itself left behind and the offset column should come out
+near zero.  mlearn (Zuo et al. 2020) is an independent set whose VASP reference differs from
+MPtrj's by a constant per atom.  Rows are grouped by `config_type` (mlearn: Elastic / AIMD-NVT /
+Vacancy / Surface; mptrj: one group), and the group names are written to groups.txt for 02 and 04.
+
 Outputs ($OUTDIR, default $REPO/models/Mo_MACE_MPA0_readout/$DESCRIPTOR/):
    D_train.csv, D_test.csv          descriptor rows (no header)
    E_train.csv, E_test.csv          columns: E_DFT, E_MACE, n_atoms, group_id
@@ -45,13 +51,15 @@ Outputs ($OUTDIR, default $REPO/models/Mo_MACE_MPA0_readout/$DESCRIPTOR/):
    con_meta.txt                     human-readable summary (read by 02 and 03)
 
 Run:  python/mace_venv/bin/python constrained_optimization/mo_mace/01_build_design_and_constraints.py
-Env:  REPO OUTDIR DESCRIPTOR(perez|readout)  A0 (Å, "exp" = 3.147 (298 K), default "mace")
+Env:  REPO OUTDIR DESCRIPTOR(perez|readout)  DATASET(mptrj|mlearn)
+      A0 (Å, "exp" = 3.147 (298 K), default "mace")
       REL_TOL (0.01)  P_TOL (GPa, 0.1)  STRAIN_H (0.005)  C11 C12 C44 (GPa)
       FORCES (1)  N_WORKERS (4; threads each = OMP_NUM_THREADS / N_WORKERS)  JAC_BLOCK (8)
 """
 
 import multiprocessing as mp
 import os
+import re
 import sys
 import time
 
@@ -64,7 +72,9 @@ import lib_mace_readout as L  # noqa: E402
 
 REPO = os.environ.get("REPO", "/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow")
 MODE = L.descriptor_mode()
-OUTDIR = os.environ.get("OUTDIR", os.path.join(REPO, "models", "Mo_MACE_MPA0_readout", MODE))
+DATASET = os.environ.get("DATASET", "mptrj")
+assert DATASET in ("mptrj", "mlearn"), DATASET
+OUTDIR = os.environ.get("OUTDIR", os.path.join(REPO, "models", "Mo_MACE_MPA0_readout", DATASET, MODE))
 
 A_EXP = 3.147  # Å, room temperature
 TARGETS = {  # GPa — Dickinson & Armstrong 1967, 273 K (verify against Smirnova 2020)
@@ -79,7 +89,7 @@ A0_SPEC = os.environ.get("A0", "mace")
 FORCES = os.environ.get("FORCES", "1") == "1"
 N_WORKERS = int(os.environ.get("N_WORKERS", 4))
 THREADS = int(os.environ.get("OMP_NUM_THREADS", os.cpu_count()))
-GROUPS = ["Elastic", "AIMD-NVT", "Vacancy", "Surface"]
+GROUPS = []          # filled from the data in main(), written to groups.txt
 
 
 def exactness_checks(calc, model, hooks, frames, ncol):
@@ -90,7 +100,7 @@ def exactness_checks(calc, model, hooks, frames, ncol):
     col_std[col_std < 1e-12] = 1.0
     dtheta = 1e-3 * rng.standard_normal(ncol) / col_std
     calc_test = L.load_calc()
-    calc_test.models[0] = L.apply_correction(model, dtheta, MODE)
+    L.set_model(calc_test, L.apply_correction(model, dtheta, MODE))
     for at in frames[:3]:
         E_mace, D = L.energy_and_descriptor(calc, at, hooks)
         x = at.copy(); x.calc = calc_test
@@ -98,7 +108,7 @@ def exactness_checks(calc, model, hooks, frames, ncol):
         print(f"  identity E_patched − (E_MACE + D·δΘ) = {err:+.2e} eV  (D·δΘ = {D @ dtheta:+.3e}, {len(at)} atoms)")
         assert abs(err) < 1e-6, "descriptor is not an exact linearisation of the correction"
     if FORCES:
-        at = next(a for a in frames if a.info["config_type"] == "AIMD-NVT")  # non-zero forces
+        at = max(frames[:200], key=lambda a: np.abs(a.get_forces()).max())  # biggest forces
         x0 = at.copy(); x0.calc = calc
         x1 = at.copy(); x1.calc = calc_test
         dF_model = (x1.get_forces() - x0.get_forces()).ravel()
@@ -121,7 +131,7 @@ def build_split(split, frames, ncol):
     ctx = mp.get_context("spawn")
     with ctx.Pool(N_WORKERS, initializer=L.init_worker, initargs=(MODE, THREADS // N_WORKERS)) as pool:
         for ic, (at, out) in enumerate(zip(frames, pool.imap(L.config_blocks, jobs))):
-            g = GROUPS.index(at.info["config_type"])
+            g = GROUPS.index(at.info["config_type"]) if len(GROUPS) > 1 else 0
             Ds.append(out["D"])
             Es.append([out["E_dft"], out["E_mace"], out["n"], g])
             if FORCES:
@@ -209,7 +219,18 @@ def main():
     ncol = L.n_columns(model, MODE)
     print(f"DESCRIPTOR={MODE}: {ncol} columns, FORCES={int(FORCES)}, "
           f"{N_WORKERS} workers × {THREADS // N_WORKERS} threads → {OUTDIR}", flush=True)
-    frames = {s: read(os.path.join(REPO, "data", "Mo", f"mlearn_Mo_{s}.extxyz"), ":") for s in ("train", "test")}
+    frames = {s: read(os.path.join(REPO, "data", "Mo", f"{DATASET}_Mo_{s}.extxyz"), ":")
+              for s in ("train", "test")}
+    # mlearn labels four physical groups; mptrj labels each frame by mp_id, which is not a
+    # grouping (and a test material need not appear in train), so mp-ids collapse to one group
+    kinds = sorted({a.info.get("config_type", DATASET)
+                    for s in ("train", "test") for a in frames[s]})
+    mp_ids = all(re.fullmatch(r"mp-\d+", k) for k in kinds)
+    GROUPS.extend([DATASET] if mp_ids or len(kinds) > 8 else kinds)
+    with open(os.path.join(OUTDIR, "groups.txt"), "w") as f:
+        f.write("\n".join(GROUPS) + "\n")
+    print(f"dataset {DATASET}: {len(frames['train'])} train / {len(frames['test'])} test frames, "
+          f"groups {GROUPS}", flush=True)
 
     calc_test, dtheta_test = exactness_checks(calc, model, hooks, frames["train"], ncol)
     for split in ("train", "test"):

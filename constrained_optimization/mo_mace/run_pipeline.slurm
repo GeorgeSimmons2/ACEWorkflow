@@ -17,7 +17,8 @@
 # Compute nodes need no internet: the Mo JSON is cached in data/Mo/ and the MPA-0
 # checkpoint in ~/.cache/mace/.
 #
-# Env (passed through): DESCRIPTOR(perez|readout) FORCES FORCES_WEIGHT N_WORKERS C11 C12 C44 REL_TOL
+# Env (passed through): DATASET(mptrj|mlearn) DESCRIPTOR(perez|readout) FORCES FORCES_WEIGHT N_WORKERS
+#                       C11 C12 C44 REL_TOL
 #                       P_TOL A0 STRAIN_H LAMBDA EPS SCAN FITS OUTDIR
 
 set -euo pipefail

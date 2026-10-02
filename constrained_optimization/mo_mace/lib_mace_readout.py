@@ -113,6 +113,19 @@ class ReadoutHooks:
             h.remove()
 
 
+def set_model(calc, model):
+    """Swap the model inside a MACECalculator AND drop its cache.
+
+    ASE keys cached results on the atoms' state, not on the calculator's internals, so a bare
+    `calc.models[0] = other` returns the PREVIOUS model's energy whenever the next structure
+    evaluated is the one just evaluated (e.g. a one-frame test split).  Silent and wrong.
+    """
+    calc.models[0] = model
+    calc.results = {}
+    calc.atoms = None
+    return calc
+
+
 def energy_and_descriptor(calc, atoms, hooks):
     """E_MACE (eV) and D (summed over atoms) for one structure."""
     at = atoms.copy()

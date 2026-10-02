@@ -9,14 +9,21 @@ deployable artefact.
            the second is the fair comparison — the offset is a reference shift, not physics.
   after  : mace_mpa0_mo_constrained.model
 
-Energies: per-atom RMSE and MAE on data/Mo/mlearn_Mo_test.extxyz, overall and per group.
+Energies: per-atom RMSE and MAE on the test split, overall and per group.
+
+EVAL_DATA evaluates on a DIFFERENT set from the one fitted (e.g. fit on the 25 pure-Mo MPtrj
+frames, evaluate on mlearn's 23 configs, which is the only honest out-of-sample number when the
+fitted set's own test split is one frame).  Across datasets the DFT reference differs by a
+constant per atom, so the cross-set energy RMSE is quoted after removing the mean shift, and the
+shift itself is printed: it is a reference difference, not an error.
 Forces: component RMSE and MAE (meV/Å), overall and per group (the offset does not touch forces).
 C_ij: finite differences at each model's OWN relaxed BCC lattice constant, and at A0 from 01.
 
 Writes $OUTDIR/before_after.csv  (rows: model; columns: metrics).
 
 Run:  python/mace_venv/bin/python constrained_optimization/mo_mace/04_before_after.py
-Env:  REPO OUTDIR DESCRIPTOR  AFTER (model file name, default mace_mpa0_mo_constrained.model)
+Env:  REPO OUTDIR DESCRIPTOR DATASET  EVAL_DATA (test set to score on; default DATASET)
+      AFTER (model file name, default mace_mpa0_mo_constrained.model)
       STRAIN_H  C11 C12 C44 (reference values printed alongside; default Dickinson & Armstrong 273 K)
 """
 
@@ -34,15 +41,22 @@ from mace.calculators import MACECalculator  # noqa: E402
 
 REPO = os.environ.get("REPO", "/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow")
 MODE = L.descriptor_mode()
-OUTDIR = os.environ.get("OUTDIR", os.path.join(REPO, "models", "Mo_MACE_MPA0_readout", MODE))
+DATASET = os.environ.get("DATASET", "mptrj")
+OUTDIR = os.environ.get("OUTDIR", os.path.join(REPO, "models", "Mo_MACE_MPA0_readout", DATASET, MODE))
 AFTER = os.environ.get("AFTER", "mace_mpa0_mo_constrained.model")
 H = float(os.environ.get("STRAIN_H", 0.005))
 EXP = [float(os.environ.get(k, v)) for k, v in (("C11", 463.7), ("C12", 157.8), ("C44", 109.2))]
-GROUPS = ["Elastic", "AIMD-NVT", "Vacancy", "Surface"]
+GROUPS = open(os.path.join(OUTDIR, "groups.txt")).read().split()
 
 A0 = float(next(l.split()[1] for l in open(os.path.join(OUTDIR, "con_meta.txt")) if l.startswith("A0 ")))
 offset = float(np.loadtxt(os.path.join(OUTDIR, "delta_theta_offset.csv"), delimiter=",")[-1])
-test = read(os.path.join(REPO, "data", "Mo", "mlearn_Mo_test.extxyz"), ":")
+EVAL_DATA = os.environ.get("EVAL_DATA", DATASET)
+test = read(os.path.join(REPO, "data", "Mo", f"{EVAL_DATA}_Mo_test.extxyz"), ":")
+CROSS = EVAL_DATA != DATASET
+if CROSS:
+    GROUPS = sorted({a.info.get("config_type", EVAL_DATA) for a in test})
+    if len(GROUPS) > 8:
+        GROUPS = [EVAL_DATA]
 
 before = L.load_calc()
 after = MACECalculator(model_paths=os.path.join(OUTDIR, AFTER), device="cpu", default_dtype="float64")
@@ -66,15 +80,19 @@ def per_atom_errors(calc, shift=0.0):
         x = at.copy()
         x.calc = calc
         err.append((x.get_potential_energy() - at.get_potential_energy()) / len(at) + shift)
-        grp.append(at.info["config_type"])
+        # one group (mptrj: config_type is the mp_id, not a kind) -> everything in that group
+        kind = at.info["config_type"] if len(GROUPS) > 1 else GROUPS[0]
+        grp.append(kind)
         df = (x.get_forces() - at.get_forces()).ravel()
         ferr.append(df)
-        fgrp += [at.info["config_type"]] * df.size
+        fgrp += [kind] * df.size
     return 1e3 * np.array(err), np.array(grp), 1e3 * np.concatenate(ferr), np.array(fgrp)  # meV/atom, meV/Å
 
 
 def summarise(name, calc, shift, elastics=True):
     e, g, f, fg = per_atom_errors(calc, shift)
+    if CROSS:                      # remove the constant reference difference between the sets
+        e = e - e.mean()
     row = {"model": name, "E_rmse_test": np.sqrt(np.mean(e**2)), "E_mae_test": np.mean(np.abs(e)),
            "F_rmse_test": np.sqrt(np.mean(f**2)), "F_mae_test": np.mean(np.abs(f))}
     for grp in GROUPS:
@@ -101,7 +119,11 @@ rows = [
 # (+offset) row: E_MACE + offset·N, offset = delta_theta_offset[-1] = mean_train (E_DFT − E_MACE)/N,
 # so the per-atom error is (E_MACE − E_DFT)/N + offset.  The offset does not change C_ij.
 
-print(f"\nMo test set: {len(test)} configs   A0 = {A0:.4f} Å   descriptor = {MODE}")
+print(f"\nfitted on {DATASET}, scored on {EVAL_DATA}: {len(test)} configs   "
+      f"A0 = {A0:.4f} Å   descriptor = {MODE}")
+if CROSS:
+    print("cross-set scoring: energy errors are quoted after removing each model's mean per-atom\n"
+          "shift (the DFT references differ by a constant); forces and C_ij are unaffected.")
 print(f"\n{'':32s}{'E RMSE':>9s}{'E MAE':>9s}" + "".join(f"{g:>10s}" for g in GROUPS) + "   (meV/atom)")
 for r in rows:
     print(f"{r['model']:32s}{r['E_rmse_test']:9.2f}{r['E_mae_test']:9.2f}"

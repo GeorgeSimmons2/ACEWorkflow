@@ -32,7 +32,8 @@ import lib_mace_readout as L  # noqa: E402
 
 REPO = os.environ.get("REPO", "/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow")
 MODE = L.descriptor_mode()
-OUTDIR = os.environ.get("OUTDIR", os.path.join(REPO, "models", "Mo_MACE_MPA0_readout", MODE))
+DATASET = os.environ.get("DATASET", "mptrj")
+OUTDIR = os.environ.get("OUTDIR", os.path.join(REPO, "models", "Mo_MACE_MPA0_readout", DATASET, MODE))
 FITS = os.environ.get("FITS", "offset,ridge,constrained").split(",")
 H = float(os.environ.get("STRAIN_H", 0.005))
 
@@ -44,9 +45,9 @@ A0 = float(meta["A0"][1])
 
 calc = L.load_calc()
 base_model = calc.models[0]
-data = {s: read(os.path.join(REPO, "data", "Mo", f"mlearn_Mo_{s}.extxyz"), ":") for s in ("train", "test")}
-D_test = np.loadtxt(os.path.join(OUTDIR, "D_test.csv"), delimiter=",")
-E_test = np.loadtxt(os.path.join(OUTDIR, "E_test.csv"), delimiter=",")
+data = {s: read(os.path.join(REPO, "data", "Mo", f"{DATASET}_Mo_{s}.extxyz"), ":") for s in ("train", "test")}
+D_test = np.atleast_2d(np.loadtxt(os.path.join(OUTDIR, "D_test.csv"), delimiter=","))
+E_test = np.atleast_2d(np.loadtxt(os.path.join(OUTDIR, "E_test.csv"), delimiter=","))
 
 
 def elastic(calc, a):
@@ -86,7 +87,7 @@ print("\nfit            identity   C11      C12      C44    σ@A0  |  a_relax  C
       "  |  E rmse tr/te (meV/at)  F rmse tr/te (meV/Å)")
 for name, model, dtheta in rows:
     model = model if model is not None else L.apply_correction(base_model, dtheta, MODE)
-    calc.models[0] = model
+    L.set_model(calc, model)
     try:
         ident = 0.0
         if name != "MACE-MPA-0":
@@ -98,7 +99,7 @@ for name, model, dtheta in rows:
         C_rel = elastic(calc, a_rel)
         # reference offset: MACE-MPA-0 and the offset-free fits are compared after removing
         # the mean per-atom shift, so the RMSE measures shape, not the PBE reference
-        E_tr = np.loadtxt(os.path.join(OUTDIR, "E_train.csv"), delimiter=",")
+        E_tr = np.atleast_2d(np.loadtxt(os.path.join(OUTDIR, "E_train.csv"), delimiter=","))
         off = 0.0 if abs(dtheta[-1]) > 0 else np.mean((E_tr[:, 0] - E_tr[:, 1]) / E_tr[:, 2])
         e_tr, f_tr = errors(calc, data["train"], off)
         e_te, f_te = errors(calc, data["test"], off)
@@ -108,5 +109,5 @@ for name, model, dtheta in rows:
             path = os.path.join(OUTDIR, f"mace_mpa0_mo_{name}.model")
             torch.save(model, path)
     finally:
-        calc.models[0] = base_model
+        L.set_model(calc, base_model)
 print(f"\npatched models → {OUTDIR}/mace_mpa0_mo_<fit>.model")

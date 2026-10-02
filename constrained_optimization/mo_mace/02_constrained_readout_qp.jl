@@ -37,11 +37,12 @@ using OSQP, SparseArrays, LinearAlgebra, DelimitedFiles, Printf, Statistics
 
 REPO   = get(ENV, "REPO", "/storage/astro2/phupfb/PhD/acestuff/ACEWorkflow")
 DESCRIPTOR = get(ENV, "DESCRIPTOR", "perez")
-OUTDIR = get(ENV, "OUTDIR", joinpath(REPO, "models", "Mo_MACE_MPA0_readout", DESCRIPTOR))
+DATASET = get(ENV, "DATASET", "mptrj")
+OUTDIR = get(ENV, "OUTDIR", joinpath(REPO, "models", "Mo_MACE_MPA0_readout", DATASET, DESCRIPTOR))
 LAMBDA = parse(Float64, get(ENV, "LAMBDA", "1e-4"))
 EPS    = parse(Float64, get(ENV, "EPS", "1e-9"))
 FW     = parse(Float64, get(ENV, "FORCES_WEIGHT", "1.0"))
-GROUPS = ["Elastic", "AIMD-NVT", "Vacancy", "Surface"]
+GROUPS = readlines(joinpath(OUTDIR, "groups.txt"))   # written by 01, follows the dataset
 
 rd(f) = readdlm(joinpath(OUTDIR, f), ',', Float64)
 Dtr, Etr = rd("D_train.csv"), rd("E_train.csv")
@@ -63,12 +64,13 @@ HAS_F = isfile(joinpath(OUTDIR, "fstats_train.csv"))
 struct FGram; GtG::Matrix{Float64}; Gtf::Vector{Float64}; ftf::Float64; nF::Float64; end
 function fgram(split, ks)
     st = rd("fstats_$(split).csv")
+    ks = [k for k in ks if k <= size(st, 1)]
     FGram(sum(rd("GtG_$(split)_g$(k-1).csv") for k in ks), vec(sum(rd("Gtf_$(split)_g$(k-1).csv") for k in ks)),
           sum(st[ks, 1]), sum(st[ks, 2]))
 end
 if HAS_F
-    Ftr = fgram("train", 1:4); Fte = fgram("test", 1:4)
-    Fte_g = [fgram("test", [k]) for k in 1:4]
+    Ftr = fgram("train", 1:length(GROUPS)); Fte = fgram("test", 1:length(GROUPS))
+    Fte_g = [fgram("test", [k]) for k in 1:length(GROUPS)]
     @printf("forces: %d train / %d test components, w_F = %g\n", Ftr.nF, Fte.nF, FW)
 else
     FW = 0.0
@@ -129,7 +131,7 @@ fits = [("offset", offset()), ("ridge", ridge(LAMBDA)), ("constr.", constrained(
 
 println("\nE RMSE (meV/atom)     train     test   " * join((@sprintf("%9s", g) for g in GROUPS), ""))
 for (name, δ) in fits
-    grp = [1e3 * sqrt(mean(((yte .- Xte * δ) .^ 2)[Ete[:, 4] .== k - 1])) for k in 1:4]
+    grp = [1e3 * sqrt(mean(((yte .- Xte * δ) .^ 2)[Ete[:, 4] .== k - 1])) for k in 1:length(GROUPS)]
     @printf("  %-10s       %7.3f  %7.3f   %s\n", name, rmse(Xtr, ytr, δ), rmse(Xte, yte, δ),
             join((@sprintf("%9.3f", g) for g in grp), ""))
 end
@@ -137,7 +139,7 @@ if HAS_F
     println("\nF RMSE (meV/Å)        train     test   " * join((@sprintf("%9s", g) for g in GROUPS), ""))
     for (name, δ) in fits
         @printf("  %-10s       %7.1f  %7.1f   %s\n", name, frmse(Ftr, δ), frmse(Fte, δ),
-                join((@sprintf("%9.1f", frmse(Fte_g[k], δ)) for k in 1:4), ""))
+                join((@sprintf("%9.1f", frmse(Fte_g[k], δ)) for k in 1:length(GROUPS)), ""))
     end
 end
 
