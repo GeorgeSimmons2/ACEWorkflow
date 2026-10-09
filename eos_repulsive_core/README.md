@@ -54,3 +54,26 @@ They are a property of the fit, not of this figure, and the figure is unaffected
 any other POPS calculation on this model divides by the same vector, so anything that
 computes pointwise corrections for `W_20_4_5A_3` will produce `Inf` unless those rows are
 dropped or the leverage is floored. Worth checking before reusing this model for UQ.
+
+## Where `positive_core_constrained_parameters.csv` comes from
+
+It had **no producer** anywhere in the repository. Every script that reads it — this one,
+`scripts/repulsive_core/ZBL_core_ACE_correction.jl`, its `_uncertainty` sibling, and
+`scripts/uq/pops_naive_centred_on_constrained_W_20_4_5A_3.jl` — has the generating call
+commented out and a `readdlm` in its place:
+
+```julia
+# ace_positive_core_constrained_parameters = constrained_ridge_regression(Ap, Yw, Gamma, constraint_matrix, bounds)
+```
+
+`constrained_optimization/w/01_positive_core_qp.jl` restores that call, with the setup lifted
+verbatim from `ZBL_core_ACE_correction.jl:1-62`. Run it, then point this script at the result:
+
+```bash
+bash constrained_optimization/run_pipeline.sh w
+THETA_CON=models/W_20_4_5A_3/repro_positive_core_constrained_parameters.csv \
+  OUT=eos_repulsive_core/repro_eos_with_pair_hist \
+  julia --project -t 8 eos_repulsive_core/eos_with_pair_hist.jl
+```
+
+`THETA_CON` defaults to the published vector, so a plain rerun is unchanged.

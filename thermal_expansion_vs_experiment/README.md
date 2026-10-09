@@ -121,3 +121,26 @@ across its own fitted range, so which points it covers is visible without annota
 `FIGW` is in points and must equal the width the figure is **displayed** at in the
 paper. Building at 540 and letting LaTeX shrink it is what made the text tiny before;
 use `\includegraphics[]{}` at natural size, with no `width=` factor.
+
+## Caption: what the unconstrained (red) points are, and are not
+
+Established by rerunning (2026-09-17; see `constrained_optimization/README.md`):
+
+- The red member's θ reproduces **bit-exactly** — the naive forest has no QP in its path.
+- Its MD does **not** reproduce across random streams. With the identical θ, a run on a
+  different stream gives a(300 K) = 4.1308 ± 0.0033 Å against the published 4.1666 ± 0.0040 Å,
+  and a(500 K) = 4.1734 against 4.1389 — **8–9× the plotted error bar**, in opposite
+  directions. The published points are non-monotonic (300 K above 500 K) for the same reason.
+- The mechanism: this member has min ω ≈ −8 THz, so the lattice is transforming during the
+  run and where it ends up depends on the trajectory. The error bars are the **thermal
+  fluctuation within one run** (`a_std_Ang`), not run-to-run spread, and so understate the
+  uncertainty of the red points by roughly an order of magnitude.
+
+Suggested caption wording:
+
+> Unconstrained points are a single MD realisation of a dynamically unstable member
+> (min ω ≈ −8 THz); error bars show thermal fluctuation within that run and do not include
+> the run-to-run variability of a structurally transforming cell, which is several times larger.
+
+The constrained α is being replaced by its distribution over all 30 committee members —
+`constrained_optimization/npt_spread/`. Quote that, not the single-member value.

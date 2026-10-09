@@ -90,6 +90,20 @@ printed so it can be audited.
 | `LETTERS`       | `0`                            | `1` = (a)–(d) panel letters                   |
 | `ROW1`, `ROW2`  | model name + parameter count   | left-hand row labels                          |
 | `SRC12`,`SRC16` | see script                     | input `.jls`                                  |
+| `SRC_N`,`SRC_C` | published paths                | build script: where to read the naive ensemble and the constrained committee from |
+| `COMMITTEE_DIR` | `bandpath_undotted_ncell4_densek` | build script: where to read `theta_mean.csv` from |
 | `OUT`           | `bands_four_panel/bands_four_panel` | output stem                              |
 | `RELAX`         | `0` (build script)             | `1` = re-relax each member instead of reusing the saved `a` |
 | `HESS_THREADS`  | all Julia threads (build)      | cap on concurrent native Hessian builds       |
+
+## Rebuilding it from re-derived parameters
+
+`SRC_N`, `SRC_C` and `COMMITTEE_DIR` exist so this figure can be rebuilt from a
+`constrained_optimization/` rerun instead of the published committees. **They default to
+the published paths**, so a plain run of either script is unchanged. The wiring is done for
+you by `bash constrained_optimization/run_pipeline.sh figures`, which writes to
+`repro_bands_four_panel.{pdf,png}` beside the published ones rather than over them.
+
+See `constrained_optimization/README.md` for why the bottom row's ensembles had to be
+reconstructed at all — the published 20-member Al_16 run was overwritten by a later
+10,000-member one.

@@ -61,8 +61,12 @@ HESS_THREADS = parse(Int, get(ENV, "HESS_THREADS", string(Threads.nthreads())))
 result = load_model(element, 12, 4, 6, 2; dataset_name=dataset)
 model  = result.model; lin_params = result.lin_params; n_params = length(lin_params)
 RES    = "$(result.dir)/results"
-SRC_N  = "$RES/naive_vs_constrained"                  # the original run's outputs
-SRC_C  = "$RES/cutting_plane_full_cloud"              # the constrained committee
+# [REPRO] Overridable so constrained_optimization/run_pipeline.sh can rebuild the cache
+# from a repro_ tree.  The DEFAULTS ARE THE PUBLISHED PATHS, so a plain rerun is
+# unchanged; only an explicit SRC_N/SRC_C/COMMITTEE_DIR redirects it.
+SRC_N  = get(ENV, "SRC_N", "$RES/naive_vs_constrained")          # the original run's outputs
+SRC_C  = get(ENV, "SRC_C", "$RES/cutting_plane_full_cloud")      # the constrained committee
+COMMITTEE_DIR = get(ENV, "COMMITTEE_DIR", "$RES/bandpath_undotted_ncell4_densek")
 OUT    = get(ENV, "OUT", "$SRC_N/bands_four_panel_Al_12.jls")
 structure = AtomsBuilder.Chemistry.symmetry(element)
 @printf("Model %s: %d params, %d Julia threads (%d for native Hessians)\n",
@@ -155,7 +159,7 @@ REJ = "$SRC_C/committee_rejection_full_cloud.csv"
 rej = readdlm(REJ, ',')
 size(rej, 2) == n_params || error("$REJ is $(size(rej,2)) wide, model has $n_params params")
 mem_c  = [collect(Float64, rej[i, :]) for i in 1:min(N_MEMBERS, size(rej, 1))]
-θ_mean = vec(readdlm("$RES/bandpath_undotted_ncell4_densek/theta_mean.csv", ','))
+θ_mean = vec(readdlm("$COMMITTEE_DIR/theta_mean.csv", ','))   # [REPRO] overridable
 @printf("ensembles: %d naive (a ∈ [%.5f, %.5f] Å), %d constrained\n",
         length(mem_n), minimum(a_n), maximum(a_n), length(mem_c)); flush(stdout)
 

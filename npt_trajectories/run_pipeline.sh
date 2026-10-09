@@ -60,6 +60,10 @@ all)
   # THETA_REF=none because a regenerated committee does not reproduce the published
   # members, so checking against them would (correctly) abort every run.
   export THETA_REF=none
+  # THETA_FILE MUST be cleared.  Both drivers default it to the PUBLISHED saved vector and
+  # prefer it over any committee, so without this the MD silently reruns the published θ
+  # while claiming to use the committee stage 1 just built.
+  export THETA_FILE=
   JM1=$(COMMITTEE_DIR="$RES/repro_bandpath_undotted_multivolume" \
         submit --dependency=afterok:"$JOB_MV"  "$HERE/run_npt_constrained_softest.slurm")
   JM2=$(COMMITTEE_DIR="$RES/repro_bandpath_undotted" \
@@ -78,6 +82,10 @@ all)
 md)
   echo "── stage 2 only: MD against the freshly built committees ───────────"
   export THETA_REF=none
+  # THETA_FILE MUST be cleared.  Both drivers default it to the PUBLISHED saved vector and
+  # prefer it over any committee, so without this the MD silently reruns the published θ
+  # while claiming to use the committee stage 1 just built.
+  export THETA_FILE=
   COMMITTEE_DIR="$RES/repro_bandpath_undotted_multivolume" \
     submit "$HERE/run_npt_constrained_softest.slurm"
   COMMITTEE_DIR="$RES/repro_bandpath_undotted" \

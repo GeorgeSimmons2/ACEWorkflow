@@ -180,12 +180,19 @@ vlines!(ax1, bp_con.x_ticks; color=(:black, 0.22), linewidth=0.6)
 xlims!(ax1, first(x_con), last(x_con))
 ylims!(ax1, lo - pad, hi + pad)
 
-# Labels kept short: at TICK pt on a ~0.54·FIGW panel a longer string overruns the
-# axis.  The qualifiers ("+ rejection", "worst member") live in the caption.
+# [REPRO] The published figure quotes each arm's min ω in the legend, and that number is
+# the whole point of panel (a) — without it the reader has to eyeball how far the red
+# curve dips.  Restored to match.  The qualifiers ("+ rejection", "worst member") still
+# live in the caption, which is what keeps these strings short enough for the panel.
+# mo_nai / mo_con come from min_freq_stable, which EXCLUDES q within qΓtol of Γ.  Using
+# minimum(F) instead would report the acoustic branches going to zero at Γ (+0.000 THz for
+# a perfectly stable member) and say nothing about stability.
+@printf("legend: unconstrained min ω = %+.3f THz, constrained min ω = %+.3f THz (Γ excluded)\n",
+        mo_nai, mo_con)
 axislegend(ax1,
     [LineElement(color=RED, linewidth=2.2), LineElement(color=BLU, linewidth=2.2)],
-    ["unconstrained",
-     "constrained"],
+    [@sprintf("unconstrained:  min ω = %.2f THz", mo_nai),
+     @sprintf("constrained:  min ω = %.3f THz", mo_con)],
     position=:rb, framevisible=true, labelsize=TICK, patchsize=(18, 2),
     padding=(5, 5, 3, 3), rowgap=1)
 text!(ax1, 0.015, 0.985; text="(a)", space=:relative, align=(:left, :top),

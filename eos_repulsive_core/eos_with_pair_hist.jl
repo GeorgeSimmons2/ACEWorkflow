@@ -83,7 +83,12 @@ end
 constraint_matrix = Matrix(reduce(hcat, bulk_bases)')
 bounds = (Vector{Float64}(zeros(length(bulk_bases))), Vector{Float64}(ones(length(bulk_bases)) .* Inf))
 
-constrained_parameters = vec(readdlm("$(result.dir)/positive_core_constrained_parameters.csv", ','))
+# [REPRO] Overridable so the figure can be rebuilt from a freshly solved θ.  The default
+# is the published vector, so a plain rerun is unchanged.  The producer is
+# constrained_optimization/w/01_positive_core_qp.jl — until that was written this CSV had
+# no producer anywhere in the repository.
+THETA_CON = get(ENV, "THETA_CON", "$(result.dir)/positive_core_constrained_parameters.csv")
+constrained_parameters = vec(readdlm(THETA_CON, ','))
 
 Ap = Diagonal(result.W) * result.A / result.P
 Yw = result.W .* result.Y
@@ -91,7 +96,10 @@ Gamma = result.P
 P = Gamma
 C = Gamma' * Gamma .* (1 / length(Yw)) .+ Ap' * Ap
 A      = C \ Ap'
-leverage = diag(Ap * A)
+# [REPRO] was `diag(Ap * A)`, which materialises the full 146,126 × 146,126 matrix
+# (171 GB) to read its diagonal — OOM-killed at 128 GB (job 6193714).  Row-wise dot
+# products give the identical diagonal in ~4 GB.
+leverage = vec(sum(Ap .* A', dims=2))
 constrained_errors = Yw .- (Ap * (P \ constrained_parameters))
 unconstrained_errors = Yw .- (Ap * (P \ result.lin_params))
 constrained_pointwise_corrections = ((P \ (A' .* (constrained_errors ./ leverage))') .+ constrained_parameters)'
@@ -113,8 +121,10 @@ if get(ENV, "POPS_BLOCK", "0") != "0"
     con_pops_samples = vec(reduce(hcat, con_pops_samples))
 end
 
-# ace_positive_core_constrained_parameters = constrained_ridge_regression(Ap, Yw, Gamma, constraint_matrix, bounds)
-ace_positive_core_constrained_parameters = vec(readdlm("$(result.dir)/positive_core_constrained_parameters.csv", ','))
+# [REPRO] This commented-out call is what originally produced the CSV read below, and it
+# was the only trace of a producer anywhere in the repo.  It now lives as runnable code in
+# constrained_optimization/w/01_positive_core_qp.jl; set THETA_CON to use its output.
+ace_positive_core_constrained_parameters = vec(readdlm(THETA_CON, ','))   # [REPRO]
 ace_positive_core_model = deepcopy(model)
 unc_model = deepcopy(model)
 ACEpotentials.Models.set_linear_parameters!(ace_positive_core_model, ace_positive_core_constrained_parameters)
